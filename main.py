@@ -14,7 +14,6 @@ if __name__ == "__main__":
     parser.add_argument("--test", type=str, help="Test predictions on saved data file")
     parser.add_argument("--change", type=float, default=1, help="number of hours to wait for price change")
     parser.add_argument("--hours_collect", type=int, default=1, help="number of hours data was collected")
-    parser.add_argument("--get_wallets",action="store_true",help="get good wallets")
     parser.add_argument("--backtest",action="store_true",help="backtesting")
     parser.add_argument("--treshold",type=int,default=2,help="copytrading buy treshold")
     parser.add_argument("--stop_loss",type=float,default=0.35,help="stop loss")
