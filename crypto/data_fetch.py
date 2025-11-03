@@ -46,8 +46,58 @@ def download_data(symbol,months,interval="1h"):
         df = yf.download(symbol, start=start_date, end=end_date, interval=interval, progress=True)
     df = df.sort_index()
     return df
-def
+def get_training_data(symbol,days,months=-1,interval=12):
+    df = download_data(symbol=symbol,months=months)
+    window_hours = days * 24
+    sequences = []
+    targets = []
+    for start in range(0, len(df) - window_hours - 1):
+        window = df.iloc[start: start + window_hours].copy()
 
+        # Resample to 12h candles
+        window_resampled = window.resample(f'{interval}H').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Adj Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
+
+        # Temporal features
+        window_resampled['day_of_week'] = window_resampled.index.dayofweek
+        window_resampled['hour'] = window_resampled.index.hour
+        window_resampled['dow_sin'] = np.sin(2 * np.pi * window_resampled['day_of_week'] / 7)
+        window_resampled['dow_cos'] = np.cos(2 * np.pi * window_resampled['day_of_week'] / 7)
+        window_resampled['hour_sin'] = np.sin(2 * np.pi * window_resampled['hour'] / 24)
+        window_resampled['hour_cos'] = np.cos(2 * np.pi * window_resampled['hour'] / 24)
+
+        # Technical indicators
+        window_resampled['EMA_12'] = window_resampled['Close'].ewm(span=12).mean()
+        window_resampled['EMA_26'] = window_resampled['Close'].ewm(span=26).mean()
+        window_resampled['MACD'] = window_resampled['EMA_12'] - window_resampled['EMA_26']
+        window_resampled['MACD_signal'] = window_resampled['MACD'].ewm(span=9).mean()
+        delta = window_resampled['Close'].diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = -delta.where(delta < 0, 0).rolling(14).mean()
+        rs = gain / loss
+        window_resampled['RSI'] = 100 - (100 / (1 + rs))
+        window_resampled['Volatility'] = window_resampled['Close'].rolling(12).std()
+
+        window_resampled = window_resampled.dropna()
+
+        # Target = next candle close
+        next_idx = start + window_hours
+        target = df.iloc[next_idx].values
+
+        sequences.append(window_resampled)
+        targets.append(target)
+
+        # Convert sequences to numpy arrays for LSTM
+    X = np.array([seq.values for seq in sequences])
+    y = np.array(targets)
+
+    return X, y, sequences[0].columns
 
 
 
