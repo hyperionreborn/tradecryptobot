@@ -63,14 +63,23 @@ def get_training_data(symbol,days,months=-1,interval=12):
             'Adj Close': 'last',
             'Volume': 'sum'
         }).dropna()
+        window_resampled['local_ATH'] = window_resampled['Close'].cummax()
+        window_resampled['local_ATL'] = window_resampled['Close'].cummin()
+        is_ath = window_resampled['Close'] == window_resampled['local_ATH']
+        is_atl = window_resampled['Close'] == window_resampled['local_ATL']
 
+        not_ath = ~is_ath
+        cumsum_not_ath = not_ath.cumsum()
+        last_ath_cumsum = cumsum_not_ath.where(is_ath).ffill().fillna(0)
+        window_resampled['time_local_High'] = cumsum_not_ath - last_ath_cumsum
+
+        not_atl = ~is_atl
+        cumsum_not_atl = not_atl.cumsum()
+        last_atl_cumsum = cumsum_not_atl.where(is_atl).ffill().fillna(0)
+        window_resampled['time_local_Low'] = cumsum_not_atl - last_atl_cumsum
         # Temporal features
         window_resampled['day_of_week'] = window_resampled.index.dayofweek
         window_resampled['hour'] = window_resampled.index.hour
-        window_resampled['dow_sin'] = np.sin(2 * np.pi * window_resampled['day_of_week'] / 7)
-        window_resampled['dow_cos'] = np.cos(2 * np.pi * window_resampled['day_of_week'] / 7)
-        window_resampled['hour_sin'] = np.sin(2 * np.pi * window_resampled['hour'] / 24)
-        window_resampled['hour_cos'] = np.cos(2 * np.pi * window_resampled['hour'] / 24)
 
         # Technical indicators
         window_resampled['EMA_12'] = window_resampled['Close'].ewm(span=12).mean()
@@ -83,7 +92,7 @@ def get_training_data(symbol,days,months=-1,interval=12):
         rs = gain / loss
         window_resampled['RSI'] = 100 - (100 / (1 + rs))
         window_resampled['Volatility'] = window_resampled['Close'].rolling(12).std()
-
+        window_resampled.drop(columns=['local_ATH', 'local_ATL'], inplace=True)
         window_resampled = window_resampled.dropna()
 
         # Target = next candle close
@@ -132,80 +141,7 @@ def safe_float(value):
     return 0.0
 
 
-def get_token_data(token,api_key=None):
-        if api_key is None:
-            api_key = DEXSCREENER_API_KEY
-        url = f"{DEXSCREENER_BASE_URL}/pair/{token}?api_key={api_key}"
-        retries = 0
-        while retries < 3:
-            try:
-                response = requests.get(url)
-                if response.status_code != 200:
-                    print(f"HTTP {response.status_code} for token {token} \n")
-                    retries += 1
-                    time.sleep(1)
-                    continue
 
-                data = response.json()
-                if not data:
-                    print("error in getting response \n")
-                    retries +=1
-                    time.sleep(1)
-                    continue
-                data_array = data.get("data", [])
-                token_data = data_array[0]
-
-
-
-                if token != token_data.get("address"):
-                    print("error in retrieving right token info \n")
-                    retries += 1
-                    time.sleep(1)
-                    continue
-
-
-                try:
-                    price_data = token_data.get("price")
-
-
-                    processed_data = {
-                        "sells1m": safe_float(price_data.get("sells_1m")),
-                        "buys1m": safe_float(price_data.get("buys_1m")),
-                        "swaps1m": safe_float(price_data.get("swaps_1m")),
-                        "age": safe_float(get_token_age(token_data.get("creation_timestamp"))),
-                        "volume": safe_float(price_data.get("volume_1m")),
-                        "price1m": safe_float(
-                            price_data.get("price_1m")
-                        ),
-                        "buy_sell_ratio": safe_divide(safe_float(price_data.get("buy_volume_1m")),safe_float(price_data.get("sell_volume_1m"))),
-                        "price5m": safe_float(price_data.get("price_5m")),
-                        "liquidity": safe_float(price_data.get("liquidity")),
-                        "holders": safe_float(token_data.get("holder_count")),
-                        "top10holders": safe_float(
-                            token_data.get("dev",{}).get("top_10_holder_rate")
-                        )
-
-                    }
-
-                    # Validate all values are proper floats
-                    for key, value in processed_data.items():
-                        if not isinstance(value, float):
-                            print(
-                                f"Warning: Non-float value for {key}: {value} in token {token} \n"
-                            )
-                            processed_data[key] = 0.0
-
-                    return processed_data
-
-                except Exception as e:
-                    print(f"Error processing pair data for token {token}: {str(e)} \n")
-                    return None
-
-            except Exception as e:
-                print(f"Error fetching data for token {token}: {str(e)} \n")
-                return None
-
-        return None
 
 
 
