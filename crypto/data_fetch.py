@@ -14,13 +14,6 @@ from numpy.ma.core import negative
 from .config import *
 api_semaphore = asyncio.Semaphore(4)
 filter_semaphore = asyncio.Semaphore(4)
-def api_up():
-    url = f"{DEXSCREENER_BASE_URL}/health"
-    response = requests.get(url)
-    if response.status_code !=200:
-        print("API is not working , exiting")
-        exit()
-
 async def fetch_json(session: aiohttp.ClientSession, url: str, max_retries: int = 3) -> Optional[Dict]:
     await asyncio.sleep(1)
     for retry in range(max_retries):
@@ -60,7 +53,6 @@ def get_training_data(symbol,days,months=-1,interval=12):
             'High': 'max',
             'Low': 'min',
             'Close': 'last',
-            'Adj Close': 'last',
             'Volume': 'sum'
         }).dropna()
         window_resampled['local_ATH'] = window_resampled['Close'].cummax()
