@@ -1,0 +1,17 @@
+[
+  "Open",
+  "High",
+  "Low",
+  "Close",
+  "Volume",
+  "time_local_High",
+  "time_local_Low",
+  "day_of_week",
+  "hour",
+  "EMA_12",
+  "EMA_26",
+  "MACD",
+  "MACD_signal",
+  "RSI",
+  "Volatility"
+]
