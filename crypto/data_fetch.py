@@ -44,7 +44,7 @@ def get_training_data(symbol,days,months=-1,interval=12):
     window_hours = days * 24
     sequences = []
     targets = []
-    for start in range(0, len(df) - window_hours - 1):
+    for start in range(0, len(df) - window_hours -interval + 1):
         window = df.iloc[start: start + window_hours].copy()
 
         # Resample to 12h candles
@@ -88,7 +88,7 @@ def get_training_data(symbol,days,months=-1,interval=12):
         window_resampled = window_resampled.dropna()
 
         # Target = next candle close
-        next_idx = start + window_hours
+        next_idx = start + window_hours + interval -1
         target = df.iloc[next_idx].values
 
         sequences.append(window_resampled)
@@ -218,47 +218,7 @@ def generate_labels(collected_data, threshold=0.0):
 
     return labels
 
-def json_get_merged_tokens(dir):
-    merged = {}
-    if not os.path.exists(dir):
-        print(f"Directory '{dir}' does not exist. Please run data collection first. \n")
-        return None
 
-    if os.path.exists(os.path.join(dir, "merged_data")):
-        os.remove(os.path.join(dir, "merged_data"))
-    for filename in os.listdir(dir):
-        if filename.endswith(".json"):
-            with open(os.path.join(dir, filename), "r") as file:
-                try:
-                    data = json.load(file)
-                    for token, data in data.items():
-                        merged[token] = data
-                except json.JSONDecodeError:
-                    print(f"skipping invalid JSON file: {filename} \n")
-    with open(os.path.join(dir, "merged_data"), "w") as f:
-        json.dump(merged, f)
-    return merged
-
-
-def json_save(data, save_dir=None):
-    if save_dir is None:
-        save_dir = LSTM_DATA_DIR
-    if not data:
-        return
-    os.makedirs(save_dir, exist_ok=True)  # Create the folder if it doesn't exist
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(save_dir, f"lstm_data_{timestamp}.json")
-
-    lstm_data_json = {k: v.tolist() for k, v in data.items()}
-    with open(filename, "w") as f:
-        json.dump(lstm_data_json, f)
-
-
-def json_get(filename):
-    with open(filename, "r") as f:
-        loaded_json_raw = json.load(f)
-    data = {k: np.array(v, dtype=np.float32) for k, v in loaded_json_raw.items()}
-    return data
 
 
 
