@@ -6,6 +6,8 @@ from typing import Tuple, List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from datetime import date, timedelta
+
 
 # Try to import config for data directories (optional)
 try:
@@ -16,10 +18,7 @@ except ImportError:
 
 
 def download_data(symbol: str, months: int, interval: str = "1h"):
-    from datetime import date, timedelta
-    import pandas as pd
-    import numpy as np
-    import yfinance as yf
+
 
     print(f"Downloading data for {symbol}...")
 
@@ -154,6 +153,7 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
     Returns:
         Tuple of (feature DataFrame, feature column names)
     """
+    df_hours = len(df)
     # Resample to specified interval
     df_resampled = df.resample(f'{resample_hours}h').agg({
         'Open': 'first',
@@ -162,7 +162,9 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
         'Close': 'last',
         'Volume': 'sum'
     }).dropna()
-    
+    expected_length = df_hours // resample_hours
+    if len(df_resampled) != expected_length:
+        return
     # Local ATH/ATL features
     df_resampled['local_ATH'] = df_resampled['Close'].cummax()
     df_resampled['local_ATL'] = df_resampled['Close'].cummin()
@@ -439,73 +441,7 @@ def safe_float(value):
     return 0.0
 
 
-def convert(
-    collected_data,
-    features=[
-        "sells1m",
-        "buys1m",
-        "swaps1m",
-        "age",
-        "volume",
-        "price1m",
-        "buy_sell_ratio",
-        "price5m",
-        "liquidity",
-        "holders",
-        "top10holders",
-    ],
-):
-    """Convert collected token data to LSTM format (kept for backward compatibility)."""
-    lstm_data = {}
 
-    for token_address, raw_data in collected_data.items():
-        try:
-            # Validate data before conversion
-            if not raw_data or not isinstance(raw_data, list):
-                print(f"Invalid data format for token {token_address} \n")
-                continue
-
-            X = []
-            for item in raw_data:
-                try:
-                    row = []
-                    for feature in features:
-                        value = item.get(feature, 0.0)
-                        # Ensure we have a numeric value
-                        row.append(float(value) if value is not None else 0.0)
-                    X.append(row)
-                except (ValueError, TypeError) as e:
-                    print(f"Error processing row for token {token_address}: {str(e)} \n")
-                    continue
-
-            if len(X) > 0:
-                X = np.array(X, dtype=np.float32)
-                if X.shape[1] == len(features):
-                    lstm_data[token_address] = X
-                else:
-                    print(f"Incorrect feature count for token {token_address} \n")
-
-        except Exception as e:
-            print(f"Error converting data for token {token_address}: {str(e)} \n")
-            continue
-
-    return lstm_data
-
-
-def generate_labels(collected_data, threshold=0.0):
-    """Generate labels from collected data (kept for backward compatibility)."""
-    labels = {}
-    for token_address, data_points in collected_data.items():
-        try:
-            price_now = float(data_points[-2]["price1m"])
-            price_later = float(data_points[-1]["price1m"])
-            change = (price_later - price_now) / price_now
-
-            labels[token_address] = np.array(int(change > threshold))
-        except (TypeError, KeyError, ZeroDivisionError):
-            continue
-
-    return labels
 
 
 # Backward compatibility: keep get_training_data for existing code
@@ -531,131 +467,7 @@ def get_training_data(symbol, days, months=-1, interval=12):
 # API-based token data collection system. They need to be re-implemented based on
 # your original API integration code.
 
-def data_get(change=1, hours_collect=1):
-    """
-    Collect token data and generate labels.
-    
-    Args:
-        change: Number of hours to wait for price change
-        hours_collect: Number of hours of data to collect
-    
-    Returns:
-        Tuple of (lstm_data dict, labels dict)
-    """
-    raise NotImplementedError(
-        "data_get() needs to be re-implemented. This function was part of the "
-        "original API-based token data collection system that was removed during "
-        "the stock data preparation refactoring."
-    )
 
-
-def json_get_merged_tokens(filename):
-    """
-    Load merged token data from JSON file.
-    
-    Args:
-        filename: Name of the JSON file (without extension or full path)
-    
-    Returns:
-        Dictionary of token data or None if file not found
-    """
-    try:
-        filepath = Path(filename)
-        if not filepath.suffix:
-            filepath = filepath.with_suffix('.json')
-        
-        # If not absolute path, check multiple locations
-        if not filepath.is_absolute():
-            # First check in LSTM_DATA_DIR if configured
-            if LSTM_DATA_DIR:
-                alt_path = Path(LSTM_DATA_DIR) / filepath
-                if alt_path.exists():
-                    filepath = alt_path
-            # If still not found, check current directory (filepath as-is)
-        
-        if filepath.exists():
-            with open(filepath, 'r') as f:
-                return json.load(f)
-        return None
-    except Exception as e:
-        print(f"Error loading token data from {filename}: {e}")
-        return None
-
-
-def take_snapshot():
-    """
-    Take a snapshot of current tokens from the API.
-    
-    Returns:
-        List of token dictionaries with token information
-    """
-    raise NotImplementedError(
-        "take_snapshot() needs to be re-implemented. This function should fetch "
-        "current token data from your API (e.g., DexScreener)."
-    )
-
-
-def collect_data_for_tokens(tokens, max_data_points=60):
-    """
-    Collect historical data for a list of tokens.
-    
-    Args:
-        tokens: List of token dictionaries
-        max_data_points: Maximum number of data points to collect per token
-    
-    Returns:
-        Dictionary mapping token addresses to lists of data points
-    """
-    raise NotImplementedError(
-        "collect_data_for_tokens() needs to be re-implemented. This function should "
-        "collect historical data for tokens from your API."
-    )
-
-
-def json_get_merged_wallets(filename):
-    """
-    Load merged wallet data from JSON file.
-    
-    Args:
-        filename: Name of the JSON file (without extension or full path)
-    
-    Returns:
-        Dictionary of wallet data or None if file not found
-    """
-    try:
-        filepath = Path(filename)
-        if not filepath.suffix:
-            filepath = filepath.with_suffix('.json')
-        
-        # If not absolute path, check multiple locations
-        if not filepath.is_absolute():
-            # First check in WALLET_DATA_DIR if configured
-            if WALLET_DATA_DIR:
-                alt_path = Path(WALLET_DATA_DIR) / filepath
-                if alt_path.exists():
-                    filepath = alt_path
-            # If still not found, check current directory (filepath as-is)
-        
-        if filepath.exists():
-            with open(filepath, 'r') as f:
-                return json.load(f)
-        return None
-    except Exception as e:
-        print(f"Error loading wallet data from {filename}: {e}")
-        return None
-
-
-def get_wallet_buys(*args, **kwargs):
-    """
-    Get buy transactions for wallets.
-    
-    Returns:
-        Dictionary or list of wallet buy data
-    """
-    raise NotImplementedError(
-        "get_wallet_buys() needs to be re-implemented. This function should fetch "
-        "wallet buy transaction data from your API."
-    )
 
 
 def json_get(path):

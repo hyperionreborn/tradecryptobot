@@ -6,17 +6,49 @@ from sklearn.linear_model import LogisticRegression
 import numpy as np
 import json
 import random
+from pathlib import Path
 from datetime import datetime
-
+from sklearn.preprocessing import StandardScaler
 from .model import LSTMModel, PriceModel
 from .data_fetch import (
-    data_get,
-    json_get_merged_tokens,
-    take_snapshot,
-    convert,
-    collect_data_for_tokens,
+    ,
+make_dataset
 )
 
+class PriceDataset(Dataset):
+    def __init__(self, data_dir="dataset", use_log_return=True, scale=True):
+        data_dir = Path(data_dir)
+
+        self.X = torch.from_numpy(np.load(data_dir / "X.npy")).float()
+        y_future = torch.from_numpy(np.load(data_dir / "y.npy").astype(np.float32)).view(-1, 1)
+
+        # Auto-detect Close index
+        with open(data_dir / "features.json", "r") as f:
+            features = json.load(f)
+        close_idx = features.index("Close")
+
+        current_price = self.X[:, -1, close_idx].view(-1, 1)
+
+        # y_change: log return or percentage change
+
+        self.y_change = torch.log(y_future / current_price)
+
+
+        self.y_class = (self.y_change > 0).float()
+
+        # Feature scaling (VERY important for LSTM)
+
+        shape = self.X.shape
+        self.scaler = StandardScaler()
+        X2d = self.X.reshape(-1, shape[-1]).numpy()
+        X2d = self.scaler.fit_transform(X2d)
+        self.X = torch.from_numpy(X2d.reshape(shape)).float()
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y_class[idx], self.y_change[idx]
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.7, gamma=2.0):
@@ -200,58 +232,7 @@ def evaluate_with_logits(model, loader, class_criterion, price_criterion, device
     return avg_loss, accuracy, mse, all_logits, all_labels
 
 
-class TokenDataset(Dataset):
-    def __init__(self, lstm_data, labels):
-        # Find valid token addresses (present in both dictionaries)
-        token_addresses = list(lstm_data.keys())
-        valid_tokens = [addr for addr in token_addresses if addr in labels]
 
-        print("Dataset creation details:\n")
-        print(f"Total tokens in lstm_data: {len(lstm_data)}\n")
-        print(f"Total tokens in labels: {len(labels)}\n")
-        print(f"Valid tokens (present in both): {len(valid_tokens)}\n")
-
-        if not valid_tokens:
-            raise ValueError(
-                "No valid tokens found (no overlap between lstm_data and labels)\n"
-            )
-
-        # Convert dictionary data to arrays for valid tokens only
-        sequences = []
-        label_values = []
-
-        for addr in valid_tokens:
-            try:
-                sequences.append(lstm_data[addr])
-                label_values.append(labels[addr])
-            except Exception as e:
-                print(f"Error processing token {addr}: {str(e)}\n")
-                continue
-
-        if not sequences:
-            raise ValueError("No valid sequences after processing\n")
-
-        self.X = torch.FloatTensor(np.stack(sequences))
-        self.y = torch.FloatTensor(label_values)
-
-        print(f"Final dataset size: {len(self.X)} sequences\n")
-        print(f"Sequence shape: {self.X.shape}\n")
-        print(f"Positive labels: {(self.y == 1).sum().item()}/{len(self.y)}\n")
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        x = self.X[idx]  # Shape: (sequence_length, num_features)
-        y_class = self.y[idx]  # Binary label
-        past_price = x[-2, -1]
-        current_price = x[-1, -1]
-        past_price_val = past_price.item()
-        current_price_val = current_price.item()
-        change = (current_price_val / past_price_val) if past_price_val != 0 else 0.0
-        y_change = torch.tensor(change, dtype=torch.float32)
-        # Ensure consistent shapes
-        return x, y_class.view(-1), y_change.view(-1)
 
 
 # # --- Main function to run the training and evaluation to call from main.py ---
@@ -272,8 +253,7 @@ def TrainAll(hours_collect=1, change=1):
         torch.cuda.manual_seed_all(SEED)
 
     print("Getting initial training data...\n")
-    lstm_data = json_get_merged_tokens(f"lstm{hours_collect}h_{change}h")
-    labels = json_get_merged_tokens(f"lstm_labels{hours_collect}h_{change}h")
+
     if lstm_data is None or labels is None:
         print("Failed to get training data. Please run data collection first:\n")
         print(
