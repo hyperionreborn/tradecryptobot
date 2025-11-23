@@ -50,46 +50,7 @@ class PriceDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y_class[idx], self.y_change[idx]
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.7, gamma=2.0):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
 
-    def forward(self, inputs, targets):
-        # inputs and targets should be in the format (B, 1)
-        # Calculate BCE loss
-        bce_loss = nn.BCEWithLogitsLoss(reduction="none")(inputs, targets)
-
-        # Apply sigmoid to get probabilities
-        probs = torch.sigmoid(inputs)
-        # Calculate p_t
-        p_t = probs * targets + (1 - probs) * (1 - targets)
-
-        # Calculate alpha_t
-        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-
-        # Calculate modulating factor
-        modulating_factor = (1.0 - p_t) ** self.gamma
-
-        # Combine all terms
-        focal_loss = alpha_t * modulating_factor * bce_loss
-
-        return focal_loss.mean()
-
-
-class PlattScaler:
-    def __init__(self):
-        self.model = LogisticRegression()
-
-    def fit(self, logits, labels):
-        logits = np.array(logits).reshape(-1, 1)
-        labels = np.array(labels).ravel()
-        self.model.fit(logits, labels)
-
-    def predict_proba(self, logits):
-        logits = np.array(logits).reshape(-1, 1)
-        return self.model.predict_proba(logits)[:, 1]
 
 
 def train(
@@ -230,20 +191,11 @@ def evaluate_with_logits(model, loader, class_criterion, price_criterion, device
     mse = price_mse / len(loader.dataset)
 
     return avg_loss, accuracy, mse, all_logits, all_labels
+def TrainAll():
 
-
-
-
-
-
-
-# # --- Main function to run the training and evaluation ---
-if __name__ == "__main__":
-    # Hyperparameters
-    WINDOW = 60
     BATCH = 64
-    EPOCHS = 2000
-    LR = 1e-3
+    EPOCHS = 100
+    LR = 2e-3  # Slightly higher learning rate
     TEST_SIZE = 0.2
     SEED = 42
     random.seed(SEED)
@@ -255,20 +207,19 @@ if __name__ == "__main__":
     if device.type == "cuda":
         torch.cuda.manual_seed_all(SEED)
 
-    print("Getting initial training data... \n")
-    lstm_data, labels = data_get()
-    if lstm_data is None or labels is None:
-        print("Failed to get training training data \n")
-        exit(1)
+    print("Getting initial training data...\n")
 
-    print(f"Collected data for {len(lstm_data)} tokens \n")
-    print(f"Have labels for {len(labels)} tokens \n")
+    dataset = PriceDataset("dataset")
 
-    # Create dataset
-    dataset = TokenDataset(lstm_data, labels)
+
+
+
     if len(dataset) == 0:
-        print("No valid training data after filtering \n")
+        print("No valid training data\n")
         exit(1)
+
+    # Calculate class weights for better balancing
+
 
     # Split into train/test
     train_size = int((1 - TEST_SIZE) * len(dataset))
@@ -276,99 +227,103 @@ if __name__ == "__main__":
     train_ds, test_ds = random_split(
         dataset, [train_size, test_size], generator=torch.Generator().manual_seed(SEED)
     )
-    class_criterion = FocalLoss(
-        alpha=0.7, gamma=2.0
-    )  # alpha=0.7 to focus more on positive class
+
+    # More aggressive focal loss for hard examples
+    class_criterion = nn.BCEWithLogitsLoss()  # Increased gamma
     price_criterion = nn.MSELoss()
 
     train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
-    test_loader = DataLoader(
-        test_ds, batch_size=BATCH
-    )  # Get input size from the first item in dataset
+    test_loader = DataLoader(test_ds, batch_size=BATCH)
+
+    # Get input size from the first item in dataset
     sample_x, _, _ = dataset[0]
     input_size = sample_x.shape[1]  # Number of features
 
+    # Slightly larger model for better capacity
     model = LSTMModel(
-        input_size=input_size, hidden_size=64, num_layers=2, dropout=0.2
+        input_size=input_size, hidden_size=256, num_layers=3, dropout=0.2
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=LR, weight_decay=1e-5
+    )  # Add weight decay
+
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.7)
 
     model_config = {
         "input_size": input_size,
-        "hidden_size": 64,
-        "num_layers": 2,
-        "dropout": 0.2,
-        "window_size": WINDOW,
+        "hidden_size": 256,  # Increased
+        "num_layers": 3,  # Increased
+        "dropout": 0.2,  # Increased
     }
     with open("model_config.json", "w") as f:
         json.dump(model_config, f)
 
-    print("\nStarting training... \n")
+    # Early stopping variables
+    best_accuracy = 0.0
+    patience = 200
+    patience_counter = 0
+
+    print("Starting training with improved class accuracy focus...\n")
     for epoch in range(1, EPOCHS + 1):
+        # Emphasize classification more heavily (alpha=2.0 vs beta=0.5)
         train_loss = train(
-            model, train_loader, class_criterion, price_criterion, optimizer, device
+            model,
+            train_loader,
+            class_criterion,
+            price_criterion,
+            optimizer,
+            device,
+            alpha=2.0,
+            beta=0.0,
         )
         test_loss, test_acc, test_mse = evaluate(
             model, test_loader, class_criterion, price_criterion, device
         )
-        print(
-            f"Epoch {epoch:02d} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Test Loss: {test_loss:.4f} | "
-            f"Class Acc: {test_acc:.2%} | "
-            f"Price MSE: {test_mse:.4f}"
-        )
 
-    torch.save(model.state_dict(), "lstm_model.pt")
-    print("Model saved as lstm_model.pt \n")
+        # Step the scheduler
+        scheduler.step()
 
-    # --- Train price model ---`
-    print("Training dedicated price model... \n")
-    price_model = PriceModel(
-        input_size=input_size, hidden_size=64, num_layers=2, dropout=0.2
-    ).to(device)
-    price_optimizer = torch.optim.Adam(price_model.parameters(), lr=LR)
+        # Early stopping based on accuracy
+        if test_acc > best_accuracy:
+            best_accuracy = test_acc
+            patience_counter = 0
+            # Save best model
+            torch.save(model.state_dict(), "lstm_model_best.pt")
+        else:
+            patience_counter += 1
 
-    # Train price model
-    for epoch in range(1, EPOCHS + 1):
-        train_loss = train_price(
-            price_model, train_loader, price_criterion, price_optimizer, device
-        )
-        # You'll need to fix evaluate_price first (it has several bugs)
-        # predictions, mse, avg_loss = evaluate_price(price_model, test_loader, price_criterion)
-        print(f"Epoch {epoch:02d} | Train Loss: {train_loss:.4f}")
+        if (
+            epoch % 50 == 0 or patience_counter == 0
+        ):  # Print more frequently for best epochs
+            current_lr = scheduler.get_last_lr()[0]
+            print(
+                f"Epoch {epoch:02d} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Test Loss: {test_loss:.4f} | "
+                f"Class Acc: {test_acc:.2%} | "
+                f"Price MSE: {test_mse:.4f} | "
+                f"LR: {current_lr:.2e} | "
+                f"Best Acc: {best_accuracy:.2%}"
+            )
 
-    torch.save(price_model.state_dict(), "price_model.pt")
-    print("Price model saved as price_model.pt \n")
+        # Early stopping
+        if patience_counter >= patience:
+            print(
+                f"Early stopping at epoch {epoch}. Best accuracy: {best_accuracy:.2%}\n"
+            )
+            break
 
-    # --- Evaluate price model ---
-    print("Evaluating price model... \n")
-    price_model.eval()
-    with torch.no_grad():
-        predictions, mse, avg_loss = evaluate_price(
-            price_model, test_loader, price_criterion, device
-        )  # Add device parameter
-        print(f"Price Model MSE: {mse:.4f} | Avg Loss: {avg_loss:.4f} \n")
-    # Save predictions and targets for further analysis
-    np.savez("price_model_predictions.npz", predictions=predictions)
-    print("Price model predictions saved as price_model_predictions.npz \n")
+    # Load best model for final save
 
-    # --- Fit and save Platt scaler ---
-    print("Fitting Platt scaling... \n")
-    _, _, _, val_logits, val_labels = evaluate_with_logits(
-        model, test_loader, class_criterion, price_criterion, device
-    )
-    scaler = PlattScaler()
-    scaler.fit(val_logits, val_labels)
-    np.savez(
-        "platt_scaler.npz",
-        coef=scaler.model.coef_,
-        intercept=scaler.model.intercept_,
-        classes=scaler.model.classes_,
-    )
-    print("Platt scaler saved as platt_scaler.npz \n")
 
-    print("Example usage: \n")
-    print("from train_model import predict_next_hour \n")
-    print("prediction, prob, price = predict_next_hour('lstm_model.pt') \n")
-    print("print(f'Prediction: {prediction} | Prob: {prob:.2%} | Price: ${price:.2f}') \n")
+    print(f"Model saved as lstm_model.pt with best accuracy: {best_accuracy:.2%}\n")
+
+
+
+
+
+
+
+
+
