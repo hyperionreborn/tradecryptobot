@@ -11,7 +11,6 @@ from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 from .model import LSTMModel, PriceModel
 from .data_fetch import (
-    ,
 make_dataset
 )
 
@@ -191,7 +190,7 @@ def evaluate_with_logits(model, loader, class_criterion, price_criterion, device
     mse = price_mse / len(loader.dataset)
 
     return avg_loss, accuracy, mse, all_logits, all_labels
-def TrainAll():
+def TrainAll(dataset_dir="Dataset"):
 
     BATCH = 64
     EPOCHS = 100
@@ -209,7 +208,8 @@ def TrainAll():
 
     print("Getting initial training data...\n")
 
-    dataset = PriceDataset("dataset")
+
+    dataset = PriceDataset(dataset_dir)
 
 
 
@@ -217,7 +217,8 @@ def TrainAll():
     if len(dataset) == 0:
         print("No valid training data\n")
         exit(1)
-
+    pos_ratio = (dataset.y_class.sum() / len(dataset)).item()
+    print(f"Label Distribution → Up: {pos_ratio:.2%}, Down: {1 - pos_ratio:.2%} across {len(dataset)} samples ")
     # Calculate class weights for better balancing
 
 
@@ -289,7 +290,7 @@ def TrainAll():
             best_accuracy = test_acc
             patience_counter = 0
             # Save best model
-            torch.save(model.state_dict(), "lstm_model_best.pt")
+            torch.save(model.state_dict(), f"{dataset_dir}.pt")
         else:
             patience_counter += 1
 
@@ -317,7 +318,7 @@ def TrainAll():
     # Load best model for final save
 
 
-    print(f"Model saved as lstm_model.pt with best accuracy: {best_accuracy:.2%}\n")
+    print(f"Model saved as {dataset_dir}.pt with best accuracy: {best_accuracy:.2%}\n")
 
 
 

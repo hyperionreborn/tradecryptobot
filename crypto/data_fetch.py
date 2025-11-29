@@ -298,7 +298,6 @@ def make_dataset(
     resample_hours: int,
     horizon: int,
     step: int,
-    outdir: str
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Orchestrate dataset creation: download, compute features, build windows, and save.
@@ -319,7 +318,7 @@ def make_dataset(
     print(f"Created {len(X)} windows with shape {X.shape}")
     
     # Create output directory
-    outdir_path = Path(outdir)
+    outdir_path = Path(f"{symbol}_{window_days}_{resample_hours}_{horizon}")
     outdir_path.mkdir(parents=True, exist_ok=True)
     
     # Save arrays
@@ -386,12 +385,7 @@ def main():
         default=1,
         help="Stride between sliding windows"
     )
-    parser.add_argument(
-        "--outdir",
-        type=str,
-        default="./dataset",
-        help="Output directory for X.npy, y.npy, features.json"
-    )
+
     
     args = parser.parse_args()
     
@@ -403,7 +397,7 @@ def main():
             resample_hours=args.resample_hours,
             horizon=args.horizon,
             step=args.step,
-            outdir=args.outdir
+
         )
     except Exception as e:
         print(f"Error generating dataset: {e}")
