@@ -42,18 +42,15 @@ def load_config():
             print(f"Error reading .env file: {e}")
             exit()
     else:
-        print(f"ERROR: .env file not found at {os.path.abspath(env_path)}")
-        exit()
-
+        print(f"WARNING: .env file not found at {os.path.abspath(env_path)}")
+        # exit()
 
     API_KEY = config.get("API_KEY")
 
-
-
     if not API_KEY:
-        print("ERROR: API_KEY is required but not found in .env file!")
+        print("WARNING: API_KEY is required but not found in .env file!")
         print("Available keys in .env:", list(config.keys()))
-        exit()
+        # exit()
 
     PRIVATE_KEY = config.get("PRIVATE_KEY")
     RPC_ENDPOINT = config.get("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
