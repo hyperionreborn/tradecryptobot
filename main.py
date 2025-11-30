@@ -12,6 +12,14 @@ if __name__ == "__main__":
     parser.add_argument("--train", action="store_true", help="Training mode")
     parser.add_argument("--predict", action="store_true", help="Prediction mode")
     parser.add_argument("--test", type=str, help="Test predictions on saved data file")
+    parser.add_argument("--window_days", type=int, default=14, help="Number of past days in each training window")
+    parser.add_argument("--horizon", type=int, default=1, help="Number of resampled steps ahead to predict")
+    parser.add_argument("--resample_hours", type=int, default=12, help="Resampling interval in hours")
+    parser.add_argument("--months", type=int, default=6, help="Number of past months to fetch (-1 for full history)")
+    parser.add_argument("--step", type=int, default=1, help="Stride between sliding windows")
+    parser.add_argument("--outdir", type=str, default="./dataset", help="Output directory for dataset")
+    parser.add_argument("--get_wallets", action="store_true", help="Fetch wallet data")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--change", type=float, default=1, help="number of hours to wait for price change")
     parser.add_argument("--hours_collect", type=int, default=1, help="number of hours data was collected")
     parser.add_argument("--backtest",action="store_true",help="backtesting")
@@ -23,16 +31,20 @@ if __name__ == "__main__":
     parser.add_argument("--test_nlp",action="store_true",help="test the nlp model")
     parser.add_argument("--runtime",type=float,default=6,help="runtime")
 
-
     args = parser.parse_args()
     crypto.load_config()
     ##.connect()
-    crypto.api_up()
+    # crypto.api_up()
     if args.data_fetch:
-        for i in range(48):
-            _, _ = crypto.data_get(
-                change=int(args.change), hours_collect=int(args.hours_collect)
-            )
+        crypto.make_dataset(
+            symbol="BTC-USD", # Defaulting to BTC-USD as per original intent or make it an arg? Adding symbol arg would be good too but sticking to requested ones first.
+            months=args.months,
+            window_days=args.window_days,
+            resample_hours=args.resample_hours,
+            horizon=args.horizon,
+            step=args.step,
+            outdir=args.outdir
+        )
     if args.get_wallets:
         asyncio.run(crypto.get_wallets())
     if args.backtest:
@@ -49,7 +61,9 @@ if __name__ == "__main__":
 
 
     if args.train:
-        crypto.TrainAll(hours_collect=int(args.hours_collect))
+        # Prefer new dataset training if available
+        crypto.train_from_dataset(outdir=args.outdir, epochs=args.epochs)
+        # Fallback or alternative: crypto.TrainAll(hours_collect=int(args.hours_collect))
 
     if args.predict:
         for i in range(4):
