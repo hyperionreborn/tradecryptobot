@@ -8,9 +8,6 @@ API_KEY = None
 RPC_ENDPOINT = None
 MAX_SLIPPAGE = None
 JUPITER_API_KEY = None
-DEXSCREENER_API_KEY = None
-DEXSCREENER_BASE_URL = None
-SOL_TOKEN_ADDRESS = None
 WALLET_DATA_DIR = None
 LSTM_DATA_DIR = None
 
@@ -59,9 +56,7 @@ def load_config():
     RPC_ENDPOINT = config.get("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
     MAX_SLIPPAGE = int(config.get("MAX_SLIPPAGE", 50))
     JUPITER_API_KEY = config.get("JUPITER_API_KEY")
-    DEXSCREENER_API_KEY = config.get("DEXSCREENER_API_KEY", "HOLLOW-DG8QF-29PWW-AR2S5-P1PAP")
-    DEXSCREENER_BASE_URL = config.get("DEXSCREENER_BASE_URL", "http://91.124.123.36:8000/api/v2.1")
-    SOL_TOKEN_ADDRESS = config.get("SOL_TOKEN_ADDRESS", "So11111111111111111111111111111111111111112")
+
     WALLET_DATA_DIR = config.get("WALLET_DATA_DIR", "/home/wallet_data")
     LSTM_DATA_DIR = config.get("LSTM_DATA_DIR", "/home/lstm_data")
 

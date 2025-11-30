@@ -2,11 +2,8 @@ torch
 numpy
 pandas
 requests
-aioredis
-prometheus_client
 scikit-learn
 ccxt
-solders
-solana
 dotenv
 transformers
+yfinance
