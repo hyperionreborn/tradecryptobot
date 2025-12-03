@@ -51,8 +51,8 @@ def download_data(symbol: str, months: int, interval: str = "1h"):
 
 
 
-    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
-    df = df.set_index('open_time').sort_index()
+    df['Open Time'] = pd.to_datetime(df['Open Time'], unit='ms', utc=True)
+    df = df.set_index('Open Time').sort_index()
     # Ensure DatetimeIndex (sometimes it’s plain Index)
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index, errors="coerce")
@@ -62,7 +62,7 @@ def download_data(symbol: str, months: int, interval: str = "1h"):
         df.index = df.index.tz_localize(None)
 
     df = df.sort_index().dropna(how="any")
-    df = df.drop(columns=['Ignore', 'Open Time','Close Time'])
+    df = df.drop(columns=['Ignore','Close Time'])
     print(f"Downloaded {len(df)} {interval} samples")
     return df
 

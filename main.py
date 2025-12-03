@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--backtest",action="store_true",help="backtesting")
     parser.add_argument("--test_nlp",action="store_true",help="test the nlp model")
-    parser.add_argument("--symbol",type=str,default="BTC-USD",help="pair to train on")
+    parser.add_argument("--symbol",type=str,default="BTCUSDT",help="pair to train on")
 
     args = parser.parse_args()
     crypto.load_config()
