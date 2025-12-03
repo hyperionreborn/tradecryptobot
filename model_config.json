@@ -1,1 +1,1 @@
-{"input_size": 9, "hidden_size": 256, "num_layers": 3, "dropout": 0.2, "window_size": 60}
+{"input_size": 19, "hidden_size": 256, "num_layers": 3, "dropout": 0.2}

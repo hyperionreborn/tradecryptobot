@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from binance.client import Client
 from datetime import date, timedelta
+from sklearn.preprocessing import StandardScaler
+import joblib
 
 
 # Try to import config for data directories (optional)
@@ -251,7 +253,7 @@ def make_dataset(
     # Create output directory
     outdir_path = Path(f"{symbol}_{window_days}_{resample_hours}_{horizon}")
     outdir_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Save arrays
     x_path = outdir_path / "X.npy"
     y_path = outdir_path / "y.npy"

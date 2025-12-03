@@ -18,7 +18,7 @@ if __name__ == "__main__":
     parser.add_argument("--months", type=int, default=6, help="Number of past months to fetch (-1 for full history)")
     parser.add_argument("--step", type=int, default=1, help="Stride between sliding windows")
     parser.add_argument("--outdir", type=str, default="./dataset", help="Output directory for dataset")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=200, help="Number of training epochs")
     parser.add_argument("--backtest",action="store_true",help="backtesting")
     parser.add_argument("--test_nlp",action="store_true",help="test the nlp model")
     parser.add_argument("--symbol",type=str,default="BTCUSDT",help="pair to train on")
@@ -40,7 +40,7 @@ if __name__ == "__main__":
 
     if args.train:
         # Prefer new dataset training if available
-        crypto.TrainAll(dataset_dir=f"{args.symbol}_{args.window_days}_{args.resample_hours}_{args.horizon}", epochs=args.epochs)
+        crypto.TrainAll(dataset_dir=f"{args.symbol}_{args.window_days}_{args.resample_hours}_{args.horizon}", EPOCHS=args.epochs)
         # Fallback or alternative: crypto.TrainAll(hours_collect=int(args.hours_collect))
 
     if args.test_nlp:
