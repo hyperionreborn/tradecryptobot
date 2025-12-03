@@ -18,18 +18,10 @@ if __name__ == "__main__":
     parser.add_argument("--months", type=int, default=6, help="Number of past months to fetch (-1 for full history)")
     parser.add_argument("--step", type=int, default=1, help="Stride between sliding windows")
     parser.add_argument("--outdir", type=str, default="./dataset", help="Output directory for dataset")
-    parser.add_argument("--get_wallets", action="store_true", help="Fetch wallet data")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
-    parser.add_argument("--change", type=float, default=1, help="number of hours to wait for price change")
-    parser.add_argument("--hours_collect", type=int, default=1, help="number of hours data was collected")
     parser.add_argument("--backtest",action="store_true",help="backtesting")
-    parser.add_argument("--treshold",type=int,default=2,help="copytrading buy treshold")
-    parser.add_argument("--stop_loss",type=float,default=0.35,help="stop loss")
-    parser.add_argument("--initial_balance",type=int,default=1000,help="initial balance for backtesting")
-    parser.add_argument("--default_buy_ammount",type=float,default=0.01,help="default buy ammount")
-    parser.add_argument("--take_profit",type=float,default=2,help="take profit")
     parser.add_argument("--test_nlp",action="store_true",help="test the nlp model")
-    parser.add_argument("--runtime",type=float,default=6,help="runtime")
+    parser.add_argument("--symbol",type=str,default="BTC-USD",help="pair to train on")
 
     args = parser.parse_args()
     crypto.load_config()
@@ -37,51 +29,20 @@ if __name__ == "__main__":
     # crypto.api_up()
     if args.data_fetch:
         crypto.make_dataset(
-            symbol="BTC-USD", # Defaulting to BTC-USD as per original intent or make it an arg? Adding symbol arg would be good too but sticking to requested ones first.
+            symbol=args.symbol, # Defaulting to BTC-USD as per original intent or make it an arg? Adding symbol arg would be good too but sticking to requested ones first.
             months=args.months,
             window_days=args.window_days,
             resample_hours=args.resample_hours,
             horizon=args.horizon,
             step=args.step,
-            outdir=args.outdir
         )
-    if args.get_wallets:
-        asyncio.run(crypto.get_wallets())
-    if args.backtest:
-
-            copytrading_sim = crypto.Trading_Sim(
-                initial_balance_usd=args.initial_balance,
-                buy_threshold=args.treshold,
-                stop_loss=args.stop_loss,
-                default_buy_amount=args.default_buy_ammount,
-                take_profit=args.take_profit,
-                runtime=args.runtime
-            )
-            copytrading_sim.copytrading_test()
 
 
     if args.train:
         # Prefer new dataset training if available
-        crypto.train_from_dataset(outdir=args.outdir, epochs=args.epochs)
+        crypto.TrainAll(dataset_dir=f"{args.symbol}_{args.window_days}_{args.resample_hours}_{args.horizon}", epochs=args.epochs)
         # Fallback or alternative: crypto.TrainAll(hours_collect=int(args.hours_collect))
 
-    if args.predict:
-        for i in range(4):
-            crypto.Predict(
-                binarymodel_path=f"{args.hours_collect}_{args.change}lstm_model.pt",
-                pricemodel_path=f"{args.hours_collect}_{args.change}price_model.pt",
-                collect_time=args.hours_collect,
-            )
     if args.test_nlp:
         crypto.test_nlp()
-    if args.test:
-        results = crypto.test_predictions(args.test)
-        print("\nPrediction Results:")
-        print("-" * 80)
-        for r in results:
-            print(f"Token: {r['token']}")
-            print(f"Prediction: {r['prediction']} | Prob: {r['probability']:.2%}")
-            print(
-                f"Binary Price: ${r['binary_price']:.2f} | Model Price: ${r['model_price']:.2f}"
-            )
-            print("-" * 80)
+

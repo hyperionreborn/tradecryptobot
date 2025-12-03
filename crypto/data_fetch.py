@@ -1,21 +1,21 @@
 import argparse
 import json
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple, List, Optional
 import numpy as np
 import pandas as pd
-import yfinance as yf
+from binance.client import Client
 from datetime import date, timedelta
 
 
 # Try to import config for data directories (optional)
 try:
-    from .config import LSTM_DATA_DIR, WALLET_DATA_DIR
+    from .config import BINANCE_API_KEY
 except ImportError:
     LSTM_DATA_DIR = None
     WALLET_DATA_DIR = None
-
+client = Client()
 
 def download_data(symbol: str, months: int, interval: str = "1h"):
 
@@ -24,111 +24,35 @@ def download_data(symbol: str, months: int, interval: str = "1h"):
 
     # Be explicit to avoid surprises from future defaults
     if months == -1:
-        df = yf.download(
-            symbol,
-            period="max",
-            interval=interval,
-            auto_adjust=False,
-            group_by="column",
-            progress=False,
-            prepost=False,
-        )
+        # Full history: Start from Binance's earliest BTCUSDT data
+        start_str = "1 Aug 2017"  # ~1502928000000 ms
     else:
-        end_date = date.today()
-        start_date = end_date - timedelta(days=int(round(months * 30.44)))
-        df = yf.download(
-            symbol,
-            start=start_date,
-            end=end_date,
-            interval=interval,
-            auto_adjust=False,
-            group_by="column",
-            progress=False,
-            prepost=False,
-        )
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=int(round(months * 30.44)))  # ~30.44 days/month
+        start_str = start_time.strftime("%d %b %Y")
 
+        # Fetch with auto-pagination (handles limits)
+    klines = client.get_historical_klines(
+        symbol,
+        interval,
+        start_str=start_str
+    )
+    columns_to_convert = ['Open', 'High', 'Low', 'Close', 'Volume', 'Quote Asset Volume', 'Number of Trades',
+                          'Taker Buy Base Asset Volume', 'Taker Buy Quote Asset Volume']
+
+    df = pd.DataFrame(klines, columns=['Open Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close Time',
+                                         'Quote Asset Volume', 'Number of Trades', 'Taker Buy Base Asset Volume',
+                                         'Taker Buy Quote Asset Volume', 'Ignore'])
+
+    for col in columns_to_convert:
+        df[col] = df[col].astype(float)
     if df is None or df.empty:
         raise RuntimeError(f"No data returned for {symbol}")
 
-    # If MultiIndex columns (e.g., (symbol, field) or (field,)) try to flatten
-    original_columns = df.columns
-    if isinstance(df.columns, pd.MultiIndex):
-        # Build flattened names from tuples but try to pick the OHLCV part if present
-        flattened = []
-        for tup in df.columns:
-            # Convert tuple elements to strings, skip empty/None
-            parts = [str(x) for x in tup if x is not None and str(x) != ""]
-            # Prefer any part that looks like an OHLCV field
-            chosen = None
-            for p in parts:
-                pl = p.lower()
-                if pl in ("open", "high", "low", "close", "volume", "adj close", "adjclose"):
-                    chosen = p
-                    break
-            if chosen is None:
-                # If none matches, try to drop the symbol (common in (symbol, field))
-                if len(parts) >= 2:
-                    # prefer the last part (often the field)
-                    chosen = parts[-1]
-                elif len(parts) == 1:
-                    chosen = parts[0]
-                else:
-                    chosen = ""
-            flattened.append(chosen)
-        df = df.copy()
-        df.columns = flattened
 
-    # Normalize columns to Title case OHLCV. Allow variations like 'Adj Close' and 'adjclose'
-    col_names = [str(c) for c in df.columns]
-    col_map = {c.lower(): c for c in col_names}
-    wanted = ["open", "high", "low", "close", "volume"]
 
-    # Direct presence check
-    missing = [w for w in wanted if w not in col_map]
-
-    # Try best-effort substring matching for common variants (e.g., 'adj close', 'adjclose')
-    if missing:
-        for w in missing.copy():
-            found = None
-            for c in col_names:
-                cl = c.lower().replace(" ", "")
-                if w.replace(" ", "") in cl:
-                    found = c
-                    break
-            if found:
-                col_map[w] = found
-                missing.remove(w)
-
-    # Final fallback: try to detect columns by inspecting original MultiIndex tuples (if any)
-    if missing and isinstance(original_columns, pd.MultiIndex):
-        # Look through original tuples to find elements that match wanted names
-        for w in missing.copy():
-            candidate = None
-            for tup in original_columns:
-                for part in tup:
-                    try:
-                        pl = str(part).lower()
-                    except Exception:
-                        continue
-                    if w in pl:
-                        candidate = str(part)
-                        break
-                if candidate:
-                    break
-            if candidate:
-                col_map[w] = candidate
-                missing.remove(w)
-
-    if missing:
-        # If still missing, raise with a helpful hint showing what we actually got
-        raise KeyError(
-            f"Expected OHLCV columns missing: {missing}. Got columns={list(df.columns)}. "
-            f"Tip: ensure auto_adjust=False and group_by='column' (yfinance output can vary)."
-        )
-
-    df = df[[col_map[w] for w in wanted]].copy()
-    df.columns = ["Open", "High", "Low", "Close", "Volume"]
-
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+    df = df.set_index('open_time').sort_index()
     # Ensure DatetimeIndex (sometimes it’s plain Index)
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index, errors="coerce")
@@ -138,6 +62,7 @@ def download_data(symbol: str, months: int, interval: str = "1h"):
         df.index = df.index.tz_localize(None)
 
     df = df.sort_index().dropna(how="any")
+    df = df.drop(columns=['Ignore', 'Open Time','Close Time'])
     print(f"Downloaded {len(df)} {interval} samples")
     return df
 
@@ -160,7 +85,13 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
         'High': 'max',
         'Low': 'min',
         'Close': 'last',
-        'Volume': 'sum'
+        'Volume': 'sum',
+        'Quote Asset Volume':'sum',
+        'Number of Trades':'sum',
+        'Taker Buy Base Asset Volume':'sum',
+        'Taker Buy Quote Asset Volume':'sum'
+
+
     }).dropna()
     expected_length = df_hours // resample_hours
     if len(df_resampled) != expected_length:

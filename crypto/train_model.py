@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from sklearn.preprocessing import StandardScaler
+from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataset import random_split
 from sklearn.linear_model import LogisticRegression
@@ -191,7 +193,6 @@ def evaluate_with_logits(model, loader, class_criterion, price_criterion, device
     mse = price_mse / len(loader.dataset)
 
     return avg_loss, accuracy, mse, all_logits, all_labels
-def TrainAll(dataset_dir="Dataset"):
 
 
 class NumpyDataset(Dataset):
@@ -229,66 +230,9 @@ class NumpyDataset(Dataset):
         return self.X[idx], self.y_class[idx].unsqueeze(0), self.y_change[idx].unsqueeze(0)
 
 
-def train_from_dataset(outdir="./dataset", epochs=100, batch_size=64, lr=2e-3):
-    outdir_path = Path(outdir)
-    x_path = outdir_path / "X.npy"
-    y_path = outdir_path / "y.npy"
-    features_path = outdir_path / "features.json"
-    
-    if not x_path.exists() or not y_path.exists():
-        print(f"Dataset not found in {outdir}")
-        return
-        
-    dataset = NumpyDataset(x_path, y_path, features_path)
-    
-    # Split into train/test
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_ds, test_ds = random_split(
-        dataset, [train_size, test_size], generator=torch.Generator().manual_seed(42)
-    )
-    
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size)
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Model setup
-    input_size = dataset.X.shape[2]
-    model = LSTMModel(input_size=input_size, hidden_size=256, num_layers=3, dropout=0.2).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.7)
-    
-    class_criterion = FocalLoss(alpha=0.7, gamma=3.0)
-    price_criterion = nn.MSELoss()
-    
-    best_accuracy = 0.0
-    
-    print("Starting training from numpy dataset...")
-    for epoch in range(1, epochs + 1):
-        train_loss = train(model, train_loader, class_criterion, price_criterion, optimizer, device, alpha=2.0, beta=0.0)
-        test_loss, test_acc, test_mse = evaluate(model, test_loader, class_criterion, price_criterion, device)
-        
-        scheduler.step()
-        
-        if test_acc > best_accuracy:
-            best_accuracy = test_acc
-            torch.save(model.state_dict(), "lstm_model_best.pt")
-            
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch:02d} | Train Loss: {train_loss:.4f} | Test Acc: {test_acc:.2%} | Best: {best_accuracy:.2%}")
-            
-    print(f"Training complete. Best accuracy: {best_accuracy:.2%}")
-    # Save final model
-    torch.save(model.state_dict(), "lstm_model.pt")
-
 
 # # --- Main function to run the training and evaluation to call from main.py ---
-def TrainAll(hours_collect=1, change=1):
-    WINDOW = 60 * int(hours_collect)
-    BATCH = 64
-    EPOCHS = 100
-    LR = 2e-3  # Slightly higher learning rate
+def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
     TEST_SIZE = 0.2
     SEED = 42
     random.seed(SEED)
@@ -303,10 +247,17 @@ def TrainAll(hours_collect=1, change=1):
     print("Getting initial training data...\n")
 
 
-    dataset = PriceDataset(dataset_dir)
 
+    outdir_path = Path(dataset_dir)
+    x_path = outdir_path / "X.npy"
+    y_path = outdir_path / "y.npy"
+    features_path = outdir_path / "features.json"
 
+    if not x_path.exists() or not y_path.exists():
+        print(f"Dataset not found in {dataset_dir}")
+        return
 
+    dataset = NumpyDataset(x_path, y_path, features_path)
 
     if len(dataset) == 0:
         print("No valid training data\n")
