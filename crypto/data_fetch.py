@@ -12,11 +12,7 @@ import joblib
 
 
 # Try to import config for data directories (optional)
-try:
-    from .config import BINANCE_API_KEY
-except ImportError:
-    LSTM_DATA_DIR = None
-    WALLET_DATA_DIR = None
+
 client = Client()
 
 def download_data(symbol: str, months: int, interval: str = "1h"):
@@ -95,9 +91,6 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
 
 
     }).dropna()
-    expected_length = df_hours // resample_hours
-    if len(df_resampled) != expected_length:
-        return
     # Local ATH/ATL features
     df_resampled['local_ATH'] = df_resampled['Close'].cummax()
     df_resampled['local_ATL'] = df_resampled['Close'].cummin()
@@ -238,7 +231,6 @@ def make_dataset(
     Returns:
         Tuple of (X, y, feature_names)
     """
-    print(f"Downloading data for {symbol}...")
     df_raw = download_data(symbol, months)
     print(f"Downloaded {len(df_raw)} hourly samples")
     
@@ -397,33 +389,7 @@ def get_training_data(symbol, days, months=-1, interval=12):
 
 
 
-def json_get(path):
-    """
-    Load JSON data from file path.
-    
-    Args:
-        path: Path to JSON file (can be relative or absolute)
-    
-    Returns:
-        Parsed JSON data or None if file not found
-    """
-    try:
-        filepath = Path(path)
-        
-        # If not absolute path, check in LSTM_DATA_DIR if configured
-        if not filepath.is_absolute():
-            if LSTM_DATA_DIR:
-                alt_path = Path(LSTM_DATA_DIR) / filepath
-                if alt_path.exists():
-                    filepath = alt_path
-        
-        if filepath.exists():
-            with open(filepath, 'r') as f:
-                return json.load(f)
-        return None
-    except Exception as e:
-        print(f"Error loading JSON from {path}: {e}")
-        return None
+
 
 
 if __name__ == "__main__":

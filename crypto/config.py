@@ -3,17 +3,15 @@ import os
 
 
 
-PRIVATE_KEY = None
+
 BINANCE_API_KEY = None
-RPC_ENDPOINT = None
-MAX_SLIPPAGE = None
-JUPITER_API_KEY = None
+
 
 
 
 def load_config():
     env_path = '.env'
-    global PRIVATE_KEY, RPC_ENDPOINT, BINANCE_API_KEY, MAX_SLIPPAGE, JUPITER_API_KEY
+    global BINANCE_API_KEY
 
 
 
@@ -51,9 +49,6 @@ def load_config():
         print("Available keys in .env:", list(config.keys()))
         # exit()
 
-    PRIVATE_KEY = config.get("PRIVATE_KEY")
-    RPC_ENDPOINT = config.get("RPC_ENDPOINT", "https://api.mainnet-beta.solana.com")
-    MAX_SLIPPAGE = int(config.get("MAX_SLIPPAGE", 50))
-    JUPITER_API_KEY = config.get("JUPITER_API_KEY")
+
 
 

@@ -18,40 +18,7 @@ from .data_fetch import (
 make_dataset
 )
 
-class PriceDataset(Dataset):
-    def __init__(self, data_dir="dataset", use_log_return=True, scale=True):
-        data_dir = Path(data_dir)
 
-        self.X = torch.from_numpy(np.load(data_dir / "X.npy")).float()
-        y_future = torch.from_numpy(np.load(data_dir / "y.npy").astype(np.float32)).view(-1, 1)
-
-        # Auto-detect Close index
-        with open(data_dir / "features.json", "r") as f:
-            features = json.load(f)
-        close_idx = features.index("Close")
-
-        current_price = self.X[:, -1, close_idx].view(-1, 1)
-
-        # y_change: log return or percentage change
-
-        self.y_change = torch.log(y_future / current_price)
-
-
-        self.y_class = (self.y_change > 0).float()
-
-        # Feature scaling (VERY important for LSTM)
-
-        shape = self.X.shape
-        self.scaler = StandardScaler()
-        X2d = self.X.reshape(-1, shape[-1]).numpy()
-        X2d = self.scaler.fit_transform(X2d)
-        self.X = torch.from_numpy(X2d.reshape(shape)).float()
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y_class[idx], self.y_change[idx]
 
 
 
@@ -219,7 +186,7 @@ class NumpyDataset(Dataset):
         # Calculate price change ratio for regression target
         # Avoid division by zero
         safe_current_prices = torch.where(current_prices == 0, torch.ones_like(current_prices), current_prices)
-        self.y_change = self.y_prices / safe_current_prices
+        self.y_change = (self.y_prices / safe_current_prices) - 1
 
         print(f"NumpyDataset loaded: {len(self.X)} samples")
         print(f"Positive labels: {self.y_class.sum().item()}/{len(self.y_class)} ({self.y_class.mean().item():.2%})")
@@ -271,13 +238,52 @@ def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
     # Split into train/test
     train_size = int((1 - TEST_SIZE) * len(dataset))
     test_size = len(dataset) - train_size
-    train_ds, test_ds = random_split(
-        dataset, [train_size, test_size], generator=torch.Generator().manual_seed(SEED)
-    )
+    split_idx = int(0.8 * len(dataset))
+    train_ds = torch.utils.data.Subset(dataset, range(0, split_idx))
+    test_ds = torch.utils.data.Subset(dataset, range(split_idx, len(dataset)))
+    X_train = torch.stack([train_ds[i][0] for i in range(len(train_ds))])
+    X_test = torch.stack([test_ds[i][0] for i in range(len(test_ds))])
 
-    # More aggressive focal loss for hard examples
+    # ===== RESHAPE AND SCALE FEATURES =====
+    Ntr, T, F = X_train.shape
+    Nte = X_test.shape[0]
+
+    # Flatten time steps for scaling
+    Xtr_2d = X_train.view(-1, F).numpy()
+    Xte_2d = X_test.view(-1, F).numpy()
+
+    # Fit scaler on TRAIN only and transform both train and test
+    scaler = StandardScaler()
+    Xtr_2d = scaler.fit_transform(Xtr_2d)  # ✅ Fit on train only
+    Xte_2d = scaler.transform(Xte_2d)  # ✅ Transform test
+    scaler_path = Path(dataset_dir) / "scaler.pkl"
+    # Save scaler for later use
+    joblib.dump(scaler, scaler_path)
+    print("Scaler saved to:", scaler_path)
+    y_test = torch.stack([test_ds[i][1] for i in range(len(test_ds))])
+
+    up_ratio = y_test.mean().item()
+
+    print("\n===== TEST SET CLASS BALANCE =====")
+    print(f"UP Ratio:   {up_ratio:.2%}")
+    print(f"DOWN Ratio: {1 - up_ratio:.2%}")
+
+    # ===== ALWAYS-UP BASELINE =====
+    always_up_acc = (y_test == 1).float().mean().item()
+
+    print("\n===== BASELINE CHECK =====")
+    print(f"Always-UP Accuracy: {always_up_acc:.2%}")
+    # Reshape back to original LSTM shape
+    X_train = torch.from_numpy(Xtr_2d).float().view(Ntr, T, F)
+    X_test = torch.from_numpy(Xte_2d).float().view(Nte, T, F)
+
+    # ===== WRITE BACK INTO ORIGINAL DATASET STORAGE =====
+    train_ds.dataset.X[train_ds.indices] = X_train
+    test_ds.dataset.X[test_ds.indices] = X_test
+
     class_criterion = nn.BCEWithLogitsLoss()  # Increased gamma
     price_criterion = nn.MSELoss()
+
 
     train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH)
