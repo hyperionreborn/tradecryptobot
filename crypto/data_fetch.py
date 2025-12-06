@@ -94,7 +94,7 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
     # Local ATH/ATL features
     df_resampled['local_ATH'] = df_resampled['Close'].cummax()
     df_resampled['local_ATL'] = df_resampled['Close'].cummin()
-    
+    df_resampled['pct_change'] = df_resampled['Close'].pct_change(12)
     is_ath = df_resampled['Close'] == df_resampled['local_ATH']
     is_atl = df_resampled['Close'] == df_resampled['local_ATL']
     
