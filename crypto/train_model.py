@@ -15,23 +15,19 @@ from pathlib import Path
 
 from .model import LSTMModel, PriceModel
 from .data_fetch import (
-make_dataset
+    make_dataset
 )
 
 
-
-
-
-
 def train(
-    model,
-    loader,
-    class_criterion,
-    price_criterion,
-    optimizer,
-    device,
-    alpha=1.0,
-    beta=1.0,
+        model,
+        loader,
+        class_criterion,
+        price_criterion,
+        optimizer,
+        device,
+        alpha=1.0,
+        beta=1.0,
 ):
     model.train()
     total_loss = 0.0
@@ -167,10 +163,10 @@ class NumpyDataset(Dataset):
     def __init__(self, X_path, y_path, features_path):
         self.X = torch.FloatTensor(np.load(X_path))
         self.y_prices = torch.FloatTensor(np.load(y_path))
-        
+
         with open(features_path, 'r') as f:
             self.feature_names = json.load(f)
-            
+
         try:
             self.close_idx = self.feature_names.index('Close')
         except ValueError:
@@ -182,7 +178,7 @@ class NumpyDataset(Dataset):
         # current_price is the Close price at the last time step of the window
         current_prices = self.X[:, -1, self.close_idx]
         self.y_class = (self.y_prices > current_prices).float()
-        
+
         # Calculate price change ratio for regression target
         # Avoid division by zero
         safe_current_prices = torch.where(current_prices == 0, torch.ones_like(current_prices), current_prices)
@@ -198,9 +194,8 @@ class NumpyDataset(Dataset):
         return self.X[idx], self.y_class[idx].unsqueeze(0), self.y_change[idx].unsqueeze(0)
 
 
-
 # # --- Main function to run the training and evaluation to call from main.py ---
-def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
+def TrainAll(dataset_dir, EPOCHS=100, BATCH=64, LR=2e-3):
     TEST_SIZE = 0.2
     SEED = 42
     random.seed(SEED)
@@ -213,8 +208,6 @@ def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
         torch.cuda.manual_seed_all(SEED)
 
     print("Getting initial training data...\n")
-
-
 
     outdir_path = Path(dataset_dir)
     x_path = outdir_path / "X.npy"
@@ -233,7 +226,6 @@ def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
     pos_ratio = (dataset.y_class.sum() / len(dataset)).item()
     print(f"Label Distribution → Up: {pos_ratio:.2%}, Down: {1 - pos_ratio:.2%} across {len(dataset)} samples ")
     # Calculate class weights for better balancing
-
 
     # Split into train/test
     train_size = int((1 - TEST_SIZE) * len(dataset))
@@ -283,7 +275,6 @@ def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
 
     class_criterion = nn.BCEWithLogitsLoss()  # Increased gamma
     price_criterion = nn.MSELoss()
-
 
     train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH)
@@ -347,7 +338,7 @@ def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
             patience_counter += 1
 
         if (
-            epoch % 50 == 0 or patience_counter == 0
+                epoch % 50 == 0 or patience_counter == 0
         ):  # Print more frequently for best epochs
             current_lr = scheduler.get_last_lr()[0]
             print(
@@ -369,12 +360,11 @@ def TrainAll(dataset_dir,EPOCHS=100, BATCH=64, LR=2e-3):
 
     # Load best model for final save
 
-
     print(f"Model saved as {dataset_dir}.pt with best accuracy: {best_accuracy:.2%}\n")
 
 
-
-
+def test_live(symbol,resample_hours,horizon,window_days):
+    return
 
 
 

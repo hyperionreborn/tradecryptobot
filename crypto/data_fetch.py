@@ -14,7 +14,28 @@ import joblib
 # Try to import config for data directories (optional)
 
 client = Client()
+def get_tradable_futures_symbols():
+    info = client.futures_exchange_info()
+    symbols = []
 
+    for s in info["symbols"]:
+        if (
+            s["status"] == "TRADING"
+            and s["contractType"] == "PERPETUAL"
+            and s["quoteAsset"] == "USDT"
+        ):
+            try:
+                klines = client.futures_klines(
+                    symbol=s["symbol"],
+                    interval=Client.KLINE_INTERVAL_1HOUR,
+                    limit=1
+                )
+                if klines:
+                    symbols.append(s["symbol"])
+            except:
+                pass
+
+    return symbols
 def download_data(symbol: str, months: int, interval: str = "1h"):
 
 
@@ -216,7 +237,9 @@ def build_windows(
     
     return X, y
 
-
+def get_evaluate_window(symbol:str,window_days:int,resample_hours:int):
+    return
+    
 def make_dataset(
     symbol: str,
     months: int,
