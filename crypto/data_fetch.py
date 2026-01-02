@@ -238,7 +238,14 @@ def build_windows(
     return X, y
 
 def get_evaluate_window(symbol:str,window_days:int,resample_hours:int):
-    return
+    steps_per_day = 24 // resample_hours
+    window_steps = window_days * steps_per_day
+    df = download_data(symbol,(window_days*60))
+    df_c = compute_features(df,resample_hours=resample_hours)
+    window_df = df_c.iloc[-window_steps:]
+
+    X = window_df.values.astype(np.float32)
+    return X
     
 def make_dataset(
     symbol: str,

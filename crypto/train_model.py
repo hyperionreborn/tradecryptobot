@@ -363,7 +363,10 @@ def TrainAll(dataset_dir, EPOCHS=100, BATCH=64, LR=2e-3):
     print(f"Model saved as {dataset_dir}.pt with best accuracy: {best_accuracy:.2%}\n")
 
 
+
 def test_live(symbol,resample_hours,horizon,window_days):
+    if symbol != "all":
+
     return
 
 
