@@ -75,7 +75,8 @@ def download_data(symbol: str, months: int, interval: str = "1h"):
     # Ensure DatetimeIndex (sometimes it’s plain Index)
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index, errors="coerce")
-
+    print(f"First timestamp: {df.index[0]}")
+    print(f"Last timestamp: {df.index[-1]}")
     # Strip timezone if present (resample expects naive or consistent tz)
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_localize(None)
@@ -113,9 +114,17 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
 
     }).dropna()
     # Local ATH/ATL features
-    df_resampled['local_ATH'] = df_resampled['Close'].cummax()
-    df_resampled['local_ATL'] = df_resampled['Close'].cummin()
+    volume_mean = df_resampled['Volume'].rolling(window=20, min_periods=1).mean()
+    volume_std = df_resampled['Volume'].rolling(window=20, min_periods=1).std()
+
+    # Z-score = (x - mean) / std
+    # Dodaj małą stałą aby uniknąć dzielenia przez 0
+    df_resampled['volume_zscore'] = (df_resampled['Volume'] - volume_mean) / (volume_std + 1e-8)
+    df_resampled['volume_zscore'] = df_resampled['volume_zscore'].clip(-5, 5)
+    df_resampled['local_ATH'] = df_resampled['Close'].rolling(window=100, min_periods=1).max()
+    df_resampled['local_ATL'] = df_resampled['Close'].rolling(window=100, min_periods=1).min()
     df_resampled['pct_change'] = df_resampled['Close'].pct_change(12)
+    df_resampled['isweekend'] = (df_resampled.index.dayofweek >=5).astype(float)
     is_ath = df_resampled['Close'] == df_resampled['local_ATH']
     is_atl = df_resampled['Close'] == df_resampled['local_ATL']
     
@@ -137,12 +146,12 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
     
     # Technical indicators with safe NaN handling
     # EMA
-    df_resampled['EMA_12'] = df_resampled['Close'].ewm(span=12, min_periods=1).mean()
-    df_resampled['EMA_26'] = df_resampled['Close'].ewm(span=26, min_periods=1).mean()
+    df_resampled['EMA_12'] = df_resampled['Close'].ewm(span=12, min_periods=1,adjust=False).mean()
+    df_resampled['EMA_26'] = df_resampled['Close'].ewm(span=26, min_periods=1,adjust=False).mean()
     
     # MACD
     df_resampled['MACD'] = df_resampled['EMA_12'] - df_resampled['EMA_26']
-    df_resampled['MACD_signal'] = df_resampled['MACD'].ewm(span=9, min_periods=1).mean()
+    df_resampled['MACD_signal'] = df_resampled['MACD'].ewm(span=9, min_periods=1,adjust=False).mean()
     
     # RSI with safe division
     delta = df_resampled['Close'].diff()
@@ -246,7 +255,23 @@ def get_evaluate_window(symbol:str,window_days:int,resample_hours:int):
 
     X = window_df.values.astype(np.float32)
     return X
-    
+def scale_live_window(X, scaler):
+    """
+    X: np.ndarray (T, F)
+    returns: torch.Tensor (1, T, F)
+    """
+    T, F = X.shape
+
+    # flatten time
+    X_2d = X.reshape(-1, F)
+
+    # scale
+    X_scaled = scaler.transform(X_2d)
+
+    # reshape back
+    X_scaled = X_scaled.reshape(1, T, F)
+
+    return torch.tensor(X_scaled, dtype=torch.float32)
 def make_dataset(
     symbol: str,
     months: int,
@@ -263,7 +288,7 @@ def make_dataset(
     """
     df_raw = download_data(symbol, months)
     print(f"Downloaded {len(df_raw)} hourly samples")
-    
+    df_raw = df_raw[df_raw.index >= df_raw.index[0].ceil('D')]
     print(f"Computing features with {resample_hours}h resampling...")
     df_features, feature_names = compute_features(df_raw, resample_hours)
     print(f"Resampled to {len(df_features)} samples with {len(feature_names)} features")

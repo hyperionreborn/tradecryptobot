@@ -39,15 +39,10 @@ def load_config():
             print(f"Error reading .env file: {e}")
             exit()
     else:
-        print(f"WARNING: .env file not found at {os.path.abspath(env_path)}")
+        return
         # exit()
 
-    BINANCE_API_KEY = config.get("BINANCE_API_KEY")
 
-    if not BINANCE_API_KEY:
-        print("WARNING: BINANCE_API_KEY is required but not found in .env file!")
-        print("Available keys in .env:", list(config.keys()))
-        # exit()
 
 
 
