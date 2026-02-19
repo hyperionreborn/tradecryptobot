@@ -3,10 +3,13 @@ import time
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
+from sklearn.calibration import calibration_curve
 from scipy.special import expit
 import joblib
+from scipy.special import logit
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import Dataset, DataLoader
+from itertools import product
 from torch.utils.data.dataset import random_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss,roc_auc_score
@@ -17,7 +20,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .model import ImprovedLSTMModel,CryptoEnsemble
+from .model import ImprovedLSTMModel,CryptoEnsemble,FocalLoss
 from .model import LSTMModel, PriceModel
 from .data_fetch import (
     make_dataset,
@@ -201,8 +204,28 @@ class NumpyDataset(Dataset):
         return self.X[idx], self.y_class[idx].unsqueeze(0), self.y_change[idx].unsqueeze(0)
 
 
+
+
+def get_model_predictions(model, loader, device="cpu"):
+    """Get logits and probabilities from model"""
+    model.eval()
+    all_logits = []
+    all_probs = []
+    all_labels = []
+
+    with torch.no_grad():
+        for xb, y_class, _ in loader:
+            xb = xb.to(device)
+            logits, _ = model(xb)
+            probs = torch.sigmoid(logits)
+
+            all_logits.extend(logits.cpu().numpy().flatten())
+            all_probs.extend(probs.cpu().numpy().flatten())
+            all_labels.extend(y_class.cpu().numpy().flatten())
+
+    return np.array(all_logits), np.array(all_probs), np.array(all_labels)
 # # --- Main function to run the training and evaluation to call from main.py ---
-def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
+def train_with_params(dataset_dir,SEED=42,EPOCHS=100,HIDDEN_SIZE=64,NUM_LAYERS=2,DROPOUT=0.0,LR=2e-3,BATCH=32):
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -212,7 +235,287 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
     if device.type == "cuda":
         torch.cuda.manual_seed_all(SEED)
 
-    print("Getting initial training data...\n")
+
+    outdir_path = Path(dataset_dir)
+    x_path = outdir_path / "X.npy"
+    y_path = outdir_path / "y.npy"
+    features_path = outdir_path / "features.json"
+
+    if not x_path.exists() or not y_path.exists():
+        print(f"Dataset not found in {dataset_dir}")
+        return
+
+    dataset = NumpyDataset(x_path, y_path, features_path)
+
+    if len(dataset) == 0:
+        print("No valid training data\n")
+        exit(1)
+    pos_ratio = (dataset.y_class.sum() / len(dataset)).item()
+
+
+    N = len(dataset)
+
+    train_end = int(0.80 * N)
+
+    train_ds = torch.utils.data.Subset(dataset, range(0, train_end))
+    test_ds = torch.utils.data.Subset(dataset, range(train_end, N))
+    X_train = torch.stack([train_ds[i][0] for i in range(len(train_ds))])
+    X_test = torch.stack([test_ds[i][0] for i in range(len(test_ds))])
+    # ===== RESHAPE AND SCALE FEATURES =====
+    Ntr, T, F = X_train.shape
+    Nte = X_test.shape[0]
+    # Flatten time steps for scaling
+    Xtr_2d = X_train.view(-1, F).numpy()
+    Xte_2d = X_test.view(-1, F).numpy()
+    # Fit scaler on TRAIN only and transform both train and test
+    scaler = StandardScaler()
+    Xtr_2d = scaler.fit_transform(Xtr_2d)  # ✅ Fit on train only
+    Xte_2d = scaler.transform(Xte_2d)  # ✅ Transform test
+    scaler_path = Path(dataset_dir) / "scaler.pkl"
+    # Save scaler for later use
+    joblib.dump(scaler, scaler_path)
+    print("Scaler saved to:", scaler_path)
+    y_test = torch.stack([test_ds[i][1] for i in range(len(test_ds))])
+    model_config = {
+        "hidden_size": HIDDEN_SIZE,
+        "num_layers": NUM_LAYERS,
+        "dropout": DROPOUT,
+        "learning_rate": LR,
+        "batch_size": BATCH
+    }
+
+
+
+    # ===== ALWAYS-UP BASELINE =====
+
+    # Reshape back to original LSTM shape
+    X_train = torch.from_numpy(Xtr_2d).float().view(Ntr, T, F)
+    X_test = torch.from_numpy(Xte_2d).float().view(Nte, T, F)
+    # ===== WRITE BACK INTO ORIGINAL DATASET STORAGE =====
+    train_ds.dataset.X[train_ds.indices] = X_train
+    test_ds.dataset.X[test_ds.indices] = X_test
+    up_ratio = y_test.mean().item()
+    alpha = 1-up_ratio
+    class_criterion = nn.BCEWithLogitsLoss()  # Increased gamma
+    price_criterion = nn.MSELoss()
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
+    test_loader = DataLoader(test_ds, batch_size=BATCH)
+    # Get input size from the first item in dataset
+    sample_x, _, _ = dataset[0]
+    input_size = sample_x.shape[1]  # Number of features
+
+    # Slightly larger model for better capacity
+    model = ImprovedLSTMModel(
+        input_size=input_size, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, dropout=DROPOUT
+    ).to(device)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=LR, weight_decay=1e-4
+    )  # Add weight decay
+
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.9)
+
+
+
+
+    # Early stopping variables
+    best_accuracy = 0.0
+    patience = 40
+    patience_counter = 0
+
+    print("Starting training with  class accuracy focus...\n")
+    for epoch in range(1, EPOCHS + 1):
+        # Emphasize classification more heavily (alpha=2.0 vs beta=0.5)
+        train_loss = train(
+            model,
+            train_loader,
+            class_criterion,
+            price_criterion,
+            optimizer,
+            device,
+            alpha=2.0,
+            beta=0.0,
+        )
+        test_loss, test_acc, _ = evaluate(
+            model, test_loader, class_criterion, price_criterion, device
+        )
+
+        # Step the scheduler
+        scheduler.step()
+
+        # Early stopping based on accuracy
+        if test_acc > best_accuracy:
+            best_accuracy = test_acc
+            patience_counter = 0
+            # Save best model
+        else:
+            patience_counter += 1
+
+        if (
+                epoch % 50 == 0 or patience_counter == 0
+        ):  # Print more frequently for best epochs
+            current_lr = scheduler.get_last_lr()[0]
+
+
+        # Early stopping
+        if patience_counter >= patience:
+            break
+    return best_accuracy,model_config
+
+def grid_search(dataset_dir,SEED = 42,EPOCHS=100):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    param_grid = {
+        'hidden_size': [32,64, 128],
+        'dropout': [0.3, 0.4, 0.5, 0.6, 0.7],
+        'num_layers': [ 2, 3],
+        'lr':[5e-4,1e-3,2e-3]
+    }
+
+    param_names = list(param_grid.keys())
+    param_combinations = list(product(*param_grid.values()))
+
+    print(f"Starting grid search with {len(param_combinations)} combinations...")
+    print(f"Each will train for {EPOCHS} epochs\n")
+    results = []
+    best_accuracy = 0
+    best_config = None
+    for i, params in enumerate(param_combinations):
+        # Create parameter dictionary
+        param_dict = dict(zip(param_names, params))
+        hidden_size = param_dict['hidden_size']
+        num_layers = param_dict['num_layers']
+        dropout = param_dict['dropout']
+        lr = param_dict['lr']
+        print(f"\n{'='*60}")
+        print(f"Combination {i+1}/{len(param_combinations)}")
+        print(f"Params: hidden_size={hidden_size}, num_layers={num_layers}, "
+              f"dropout={dropout}, lr={lr}")
+
+        # Train with these parameters
+        accuracy, model_config = train_with_params(
+            dataset_dir=dataset_dir,
+            SEED=SEED,
+            EPOCHS=EPOCHS,
+            HIDDEN_SIZE=hidden_size,
+            NUM_LAYERS=num_layers,
+            DROPOUT=dropout,
+            LR=lr,
+            BATCH=32  # You can also make this a grid parameter if you want
+        )
+
+        # Store results
+        result = {
+            'combination': i+1,
+            'accuracy': accuracy,
+            'hidden_size': hidden_size,
+            'num_layers': num_layers,
+            'dropout': dropout,
+            'learning_rate': lr,
+            'batch_size':32 # Fixed for now
+        }
+        results.append(result)
+
+        print(f"Accuracy: {accuracy:.2%}")
+
+        # Track best configuration
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_config = model_config.copy()
+            print(f"  🎯 NEW BEST!")
+
+    # Save results to JSON
+    results_path = Path(dataset_dir) / "grid_search_results.json"
+    with open(results_path, 'w') as f:
+        json.dump({
+            'results': results,
+            'best_accuracy': best_accuracy,
+            'best_config': best_config
+        }, f, indent=2)
+
+    # Save best configuration separately
+    if best_config:
+        best_config_path = Path(dataset_dir) / "best_model_config.json"
+        with open(best_config_path, 'w') as f:
+            json.dump(best_config, f, indent=2)
+
+        print(f"\n{'='*60}")
+        print("GRID SEARCH COMPLETE!")
+        print(f"Best accuracy: {best_accuracy:.2%}")
+        print(f"Best configuration saved to: {best_config_path}")
+def conf_eval(model,price_model,loader):
+    accuracy_confidence = 0.5
+    all_predictions = []
+    with torch.no_grad():
+        for xb, y_class, y_change in loader:
+            xb = xb.to("cpu")
+
+            # Predykcja z obu modeli
+            logits, _ = model(xb)  # ignorujemy price z class_model
+            prob_up = torch.sigmoid(logits)
+
+            _, pred_change = price_model(xb)
+
+            # Przenieś na CPU
+            prob_up = prob_up.cpu().numpy().flatten()
+            pred_change = pred_change.cpu().numpy().flatten()
+            y_class = y_class.cpu().numpy().flatten()
+
+            # Zapisz wszystko
+            for i in range(len(prob_up)):
+                all_predictions.append({
+                    'prob_up': prob_up[i],
+                    'pred_change': pred_change[i],
+                    'actual_class': y_class[i],
+                    'actual_change':y_change[i]
+                })
+    print("Confidence trading accuracy")
+
+    prop_threshold = 0.50
+    trades = []
+    correct_trades = []
+
+    changes = []
+
+    for p in all_predictions:
+
+        predict_long = (p['prob_up'] > prop_threshold) and (p['pred_change'] > 0.0)
+
+                # Short: oba modele przewidują spadek
+        predict_short = (p['prob_up'] < prop_threshold) and (p['pred_change'] < 0.0)
+
+        if predict_long or predict_short:
+
+            changes.append(abs(p['actual_change']))
+            trades.append(p)
+            predicted_direction = 1 if predict_long else 0
+            actual_direction = 1 if p['actual_class'] > 0 else 0
+            correct_trades.append(predicted_direction == actual_direction)
+
+
+    if trades:
+
+        accuracy_confidence = sum(correct_trades)/len(correct_trades)
+        mean_changes = np.mean(changes)
+        median_changes = np.median(changes)
+        print(f"Num trades:{len(correct_trades)}")
+        print(f"Accuracy:{accuracy_confidence:.2%}")
+        print(f"Mean changes:{mean_changes:.4%}")
+        print(f"Median changes:{median_changes:.4%}")
+    return accuracy_confidence
+
+    # Podział na train/test
+def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=32, LR=1e-3):
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.backends.cudnn.deterministic = True
+    print(f"TRAININ ON {dataset_dir}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(SEED)
+
 
     outdir_path = Path(dataset_dir)
     x_path = outdir_path / "X.npy"
@@ -236,33 +539,35 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
 
     N = len(dataset)
 
-    train_end = int(0.85 * N)
-
+    train_end = int(0.7 * N)
+    test_end = int(0.875 * N)
     train_ds = torch.utils.data.Subset(dataset, range(0, train_end))
-    test_ds = torch.utils.data.Subset(dataset, range(train_end, N))
+    test_ds = torch.utils.data.Subset(dataset, range(train_end, test_end))
+    val_end_half = test_end + (N - test_end) // 4
+    val_ds = torch.utils.data.Subset(dataset, range(test_end, N))
     X_train = torch.stack([train_ds[i][0] for i in range(len(train_ds))])
+    X_val = torch.stack([val_ds[i][0] for i in range(len(val_ds))])
     X_test = torch.stack([test_ds[i][0] for i in range(len(test_ds))])
     # ===== RESHAPE AND SCALE FEATURES =====
     Ntr, T, F = X_train.shape
     Nte = X_test.shape[0]
+    Nval = X_val.shape[0]
     # Flatten time steps for scaling
     Xtr_2d = X_train.view(-1, F).numpy()
     Xte_2d = X_test.view(-1, F).numpy()
+    Xval_2d = X_val.view(-1,F).numpy()
     # Fit scaler on TRAIN only and transform both train and test
     scaler = StandardScaler()
     Xtr_2d = scaler.fit_transform(Xtr_2d)  # ✅ Fit on train only
     Xte_2d = scaler.transform(Xte_2d)  # ✅ Transform test
+    Xval_2d = scaler.transform(Xval_2d)
     scaler_path = Path(dataset_dir) / "scaler.pkl"
     # Save scaler for later use
     joblib.dump(scaler, scaler_path)
-    print("Scaler saved to:", scaler_path)
     y_test = torch.stack([test_ds[i][1] for i in range(len(test_ds))])
 
     up_ratio = y_test.mean().item()
 
-    print("\n===== TEST SET CLASS BALANCE =====")
-    print(f"UP Ratio:   {up_ratio:.2%}")
-    print(f"DOWN Ratio: {1 - up_ratio:.2%}")
 
     # ===== ALWAYS-UP BASELINE =====
     always_up_acc = (y_test == 1).float().mean().item()
@@ -272,27 +577,35 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
     # Reshape back to original LSTM shape
     X_train = torch.from_numpy(Xtr_2d).float().view(Ntr, T, F)
     X_test = torch.from_numpy(Xte_2d).float().view(Nte, T, F)
+    X_val = torch.from_numpy(Xval_2d).float().view(Nval,T,F)
     # ===== WRITE BACK INTO ORIGINAL DATASET STORAGE =====
     train_ds.dataset.X[train_ds.indices] = X_train
     test_ds.dataset.X[test_ds.indices] = X_test
-
-    class_criterion = nn.BCEWithLogitsLoss()  # Increased gamma
+    val_ds.dataset.X[val_ds.indices] = X_val
+    alpha=1-up_ratio
+    class_criterion = FocalLoss(alpha=alpha,gamma=1.0)  # Increased gamma
     price_criterion = nn.MSELoss()
-
+    days3 = test_end + (N - test_end) // 8
+    dataset3days = torch.utils.data.Subset(dataset, range(test_end, days3))
+    week = test_end + (N- test_end ) // 4
+    datasetweek = torch.utils.data.Subset(dataset, range(test_end, week))
     train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH)
+    val_loader = DataLoader(val_ds,batch_size=BATCH)
+    daysloader = DataLoader(dataset3days,batch_size=BATCH)
+    week_loader = DataLoader(datasetweek,batch_size=BATCH)
     # Get input size from the first item in dataset
     sample_x, _, _ = dataset[0]
     input_size = sample_x.shape[1]  # Number of features
     HIDDEN_SIZE = 32
-    NUM_LAYERS = 2
+    NUM_LAYERS = 3
     DROPOUT = 0.4
     # Slightly larger model for better capacity
     model = ImprovedLSTMModel(
         input_size=input_size, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, dropout=DROPOUT
     ).to(device)
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=LR, weight_decay=1e-5
+        model.parameters(), lr=LR, weight_decay=1e-4
     )  # Add weight decay
 
     # Learning rate scheduler
@@ -309,7 +622,7 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
 
     # Early stopping variables
     best_accuracy = 0.0
-    patience = 200
+    patience = 50
     patience_counter = 0
 
     print("Starting training with  class accuracy focus...\n")
@@ -341,18 +654,6 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
         else:
             patience_counter += 1
 
-        if (
-                epoch % 10 == 0 or patience_counter == 0
-        ):  # Print more frequently for best epochs
-            current_lr = scheduler.get_last_lr()[0]
-            print(
-                f"Epoch {epoch:02d} | "
-                f"Train Loss: {train_loss:.4f} | "
-                f"Test Loss: {test_loss:.4f} | "
-                f"Class Acc: {test_acc:.2%} | "
-                f"LR: {current_lr:.2e} | "
-                f"Best Acc: {best_accuracy:.2%}"
-            )
 
         # Early stopping
         if patience_counter >= patience:
@@ -362,9 +663,20 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
     # Load best model for final save
 
     print(f"Model saved as {dataset_dir}/{SEED}_binary_model.pt with best accuracy: {best_accuracy:.2%}\n")
+    model.load_state_dict(torch.load(f"{dataset_dir}/{SEED}_binary_model.pt"))
+    model.eval()
+    logits , probs, labels = get_model_predictions(model, test_loader)
+
+    # Calculate metrics
+
+
+
+
+
+
 
     best_mse = 64.0
-    patience = 200
+    patience = 20
     patience_counter = 0
     price_model = ImprovedLSTMModel(
         input_size=input_size,
@@ -377,7 +689,6 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
     )
 
     price_scheduler = torch.optim.lr_scheduler.StepLR(price_optimizer, step_size=50, gamma=0.9)
-    print("Starting training with price focus...\n")
     for epoch in range(1, EPOCHS + 1):
         train_loss = train(
             price_model,
@@ -411,245 +722,43 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=64, LR=2e-3):
             current_lr = price_scheduler.get_last_lr()[0]
             rmse = np.sqrt(best_mse)  # 0.05 = 5% błąd
 
-            print(
-                f"Epoch {epoch:02d} | "
-                f"Train Loss: {train_loss:.4f} | "
-                f"Test Loss: {test_loss:.4f} | "
-                f"Current mse: {test_mse} | "
-                f"LR: {current_lr:.2e} | "
-                f"Best mse: {best_mse} | "
-                f"RMSE: {rmse:.2%}"
-            )
+
 
         # Early stopping
         if patience_counter >= patience:
-            print(
-                f"Early stopping at epoch {epoch}. Best accuracy: {best_mse:.2%}\n"
-            )
             break
 
-    print("\n===== CALIBRATION EVALUATION (TEST SET) =====")
+    print(
+        f" Best RMSE: {rmse:.2%}\n"
+    )
     model.load_state_dict(torch.load(f"{dataset_dir}/{SEED}_binary_model.pt"))
     model.eval()
     price_model.load_state_dict(torch.load(f"{dataset_dir}/{SEED}_price_model.pt"))
     price_model.eval()
     # Logity z TEST
-    _, _, _, test_logits, test_labels = evaluate_with_logits(
-        model, test_loader, class_criterion, price_criterion, device
-    )
 
-    test_logits = np.array(test_logits).reshape(-1,1)
-    test_labels = np.array(test_labels).reshape(-1)
 
-    # --- PRZED KALIBRACJĄ ---
-    probs_raw = expit(test_logits)  # sigmoid(logits)
-    brier_raw = brier_score_loss(test_labels, probs_raw)
 
-    # --- PO KALIBRACJI ---
 
-    print(f"Brier score: {brier_raw:.4f}")
-    print("\nComputing ROC-AUC ")
-    _, _, _, test_logits, test_labels = evaluate_with_logits(
-        model, test_loader, class_criterion, price_criterion, device
-    )
 
-    # Convert to numpy arrays
-    test_logits = np.array(test_logits).reshape(-1)
-    test_labels = np.array(test_labels).reshape(-1)
+    accuracy_confidence = conf_eval(model,price_model,test_loader)
 
-    # Convert logits → probabilities
-    probs_raw = expit(test_logits)  # sigmoid(logits)
 
-    # Compute ROC-AUC
-    roc_auc = roc_auc_score(test_labels, probs_raw)
 
-    print(f"ROC-AUC (raw model): {roc_auc:.4f}")
 
-    print("\n===== FILTERED METRICS (RAW SIGMOID) =====")
 
-    probs_raw = expit(test_logits).reshape(-1)
-    mask = (probs_raw >= 0.60) | (probs_raw <= 0.40)
+    # Podział na train/test
 
-    filtered_probs = probs_raw[mask]
-    filtered_labels = test_labels[mask]
-
-    directions = (filtered_probs > 0.5).astype(int)
-    filtered_acc = (directions == filtered_labels).mean()
-
-    print(f"Trades: {len(filtered_labels)} / {len(test_labels)}")
-    print(f"Accuracy after filtering (RAW): {filtered_acc:.2%}")
-    all_predictions = []
-    with torch.no_grad():
-        for xb, y_class, y_change in test_loader:
-            xb = xb.to(device)
-
-            # Predykcja z obu modeli
-            logits, _ = model(xb)  # ignorujemy price z class_model
-            prob_up = torch.sigmoid(logits)
-
-            _, pred_change = price_model(xb)
-
-            # Przenieś na CPU
-            prob_up = prob_up.cpu().numpy().flatten()
-            pred_change = pred_change.cpu().numpy().flatten()
-            y_class = y_class.cpu().numpy().flatten()
-
-            # Zapisz wszystko
-            for i in range(len(prob_up)):
-                all_predictions.append({
-                    'prob_up': prob_up[i],
-                    'pred_change': pred_change[i],
-                    'actual_class': y_class[i],
-                })
-    print("Confidence trading accuracy")
-
-    prop_threshold = 0.50
-    trades = []
-    correct_trades = []
-    for p in all_predictions:
-
-        predict_long = (p['prob_up'] > prop_threshold) and (p['pred_change'] > 0.0)
-
-                # Short: oba modele przewidują spadek
-        predict_short = (p['prob_up'] < prop_threshold) and (p['pred_change'] < 0.0)
-
-        if predict_long or predict_short:
-            trades.append(p)
-            predicted_direction = 1 if predict_long else 0
-            actual_direction = 1 if p['actual_class'] > 0 else 0
-            correct_trades.append(predicted_direction == actual_direction)
-    if trades:
-        accuracy_confidence = sum(correct_trades)/len(correct_trades)
-        print(f"Num trades:{len(correct_trades)}")
-        print(f"Accuracy:{accuracy_confidence:.2%}")
+    print(f"Evaluating on VALIDATION DATASET")
+    print(f"Evaluating on 7 days")
+    week_confidence = conf_eval(model,price_model,week_loader)
+    print(f"Evaluating on 3.5 days")
+    days_confidence = conf_eval(model,price_model,daysloader)
     all_changes = dataset.y_change.numpy()
     avg_change = np.mean(np.abs(all_changes))
     print(f"average  change: {avg_change:.4%}")
+    return best_accuracy,accuracy_confidence,week_confidence,days_confidence
 
-    # Podział na train/test
-    train_changes = dataset.y_change[train_ds.indices].numpy()
-    test_changes = dataset.y_change[test_ds.indices].numpy()
-
-    print(f"average train change: {np.mean(np.abs(train_changes)):.4%}")
-    print(f"average test change: {np.mean(np.abs(test_changes)):.4%}")
-    return best_accuracy,accuracy_confidence
-def Ensemble_model_train(dataset,num_models = 3 ):
-    seeds = [47]
-    arr_acc = []
-    arr_conf = []
-    for i in range(1, num_models):
-        seeds.append(seeds[i - 1] * 13)
-    for seed in seeds:
-        acc,conf =  TrainAll(dataset_dir=dataset,SEED=seed)
-        arr_acc.append(acc)
-        arr_conf.append(conf)
-    accuracies = np.array(arr_acc)
-    weights = accuracies / accuracies.sum()
-    ensemble_info = {
-        'seeds': seeds,
-        'val_accuracies': arr_acc,
-        'val_accuracies_confidence': arr_conf,
-        'weights': weights.tolist(),
-        'created_at': datetime.now().isoformat()
-    }
-    ensemble_path = Path(dataset) / "ensemble_info.json"
-    with open(ensemble_path, 'w') as f:
-        json.dump(ensemble_info, f, indent=2)
-
-    print(f"\n✅ Ensemble training complete!")
-    print(f"Model accuracies: {ensemble_info['val_accuracies']}")
-    print(f"Ensemble weights: {ensemble_info['weights']}")
-    print(f"Metadata saved to: {ensemble_path}")
-
-    return ensemble_info
-def Ensemble_model_evaluate(dataset):
-    model = CryptoEnsemble(dataset)
-    price_model = CryptoEnsemble(dataset,"price_model",device="cpu")
-    all_predictions = []
-    outdir_path = Path(dataset)
-    datasetn = NumpyDataset(
-        outdir_path / "X.npy",
-        outdir_path / "y.npy",
-        outdir_path / "features.json"
-    )
-    ensemble_path = outdir_path / "ensemble_info.json"
-
-    with open(ensemble_path, 'r') as f:
-        info = json.load(f)
-
-    val_conf = info['val_accuracies_confidence']
-    val_accs = info['val_accuracies']
-
-    # Calculate statistics
-    best_confidence = np.max(val_conf)
-    best_individual_accuracy = np.max(val_accs)
-    # Get test split
-    N = len(datasetn)
-    test_start = int(0.75 * N)
-    test_indices = range(test_start, N)
-    all_preds = []
-    all_labels = []
-    for idx in test_indices:
-        xbn, y_class, y_change = datasetn[idx]
-        xb = xbn.numpy()
-
-        # Get predictions from ensemble model
-        logits, pred_change = model.predict(xb)
-
-        # Convert logits to tensor, apply sigmoid, get float value
-        prob_up_tensor = torch.sigmoid(torch.tensor(logits, dtype=torch.float32))
-        prob_up = prob_up_tensor.item()  # Get Python float - THIS IS A FLOAT, NOT TENSOR
-
-        # pred_change is already a float from ensemble.predict()
-        pred_change_val = float(pred_change)
-
-        # Convert y_class tensor to float
-        y_class_val = y_class.item() if isinstance(y_class, torch.Tensor) else float(y_class)
-
-        # Get predicted class
-        pred_class = 1 if prob_up > 0.5 else 0
-        all_preds.append(pred_class)
-        all_labels.append(y_class_val)
-
-        # Store for confidence trading analysis
-        all_predictions.append({
-            'prob_up': prob_up,  # Already a float
-            'pred_change': pred_change_val,  # Already a float
-            'actual_class': y_class_val,  # Already a float
-        })
-
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
-
-    # Calculate accuracy
-    accuracy = (all_preds == all_labels).mean()
-    improvment = accuracy - best_individual_accuracy
-    print(f"Ensemble model accuracy:{accuracy:.4%} improvement {improvment:.4%} ")
-
-    prop_threshold = 0.50
-    trades = []
-    correct_trades = []
-
-    for p in all_predictions:
-        predict_long = (p['prob_up'] > prop_threshold) and (p['pred_change'] > 0.0)
-        predict_short = (p['prob_up'] < prop_threshold) and (p['pred_change'] < 0.0)
-
-        if predict_long or predict_short:
-            trades.append(p)
-            predicted_direction = 1 if predict_long else 0
-            actual_direction = 1 if p['actual_class'] > 0 else 0
-            correct_trades.append(predicted_direction == actual_direction)
-
-    if trades:
-        accuracy_confidence = sum(correct_trades) / len(correct_trades)
-        print(f"Num trades: {len(trades)}")
-        print(f"Accuracy: {accuracy_confidence:.2%}")
-
-    if len(correct_trades) > 0:
-        improvment_conf = accuracy_confidence - best_confidence
-        print(f"Confidence trading accuracy {accuracy_confidence:.4%} improvement: {improvment_conf:.4%}")
-    else:
-        print("No trades made with confidence filtering")
 def get_current_utc_time():
     """Get current hour and minute in UTC"""
     now_utc = datetime.now(timezone.utc)

@@ -36,17 +36,17 @@ def get_tradable_futures_symbols():
                 pass
 
     return symbols
-def download_data(symbol: str, months: int, interval: str = "1h"):
+def download_data(symbol: str, months: int, interval: str = "1h",cutoff:int=0):
 
 
-    print(f"Downloading data for {symbol}...")
+
 
     # Be explicit to avoid surprises from future defaults
     if months == -1:
         # Full history: Start from Binance's earliest BTCUSDT data
         start_str = "1 Aug 2017"  # ~1502928000000 ms
     else:
-        end_time = datetime.now()
+        end_time = datetime.now() - timedelta(days=(int(cutoff)))
         start_time = end_time - timedelta(days=int(round(months * 30.44)))  # ~30.44 days/month
         start_str = start_time.strftime("%d %b %Y")
 
@@ -75,15 +75,13 @@ def download_data(symbol: str, months: int, interval: str = "1h"):
     # Ensure DatetimeIndex (sometimes it’s plain Index)
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index, errors="coerce")
-    print(f"First timestamp: {df.index[0]}")
-    print(f"Last timestamp: {df.index[-1]}")
     # Strip timezone if present (resample expects naive or consistent tz)
     if getattr(df.index, "tz", None) is not None:
         df.index = df.index.tz_localize(None)
 
     df = df.sort_index().dropna(how="any")
     df = df.drop(columns=['Ignore','Close Time'])
-    print(f"Downloaded {len(df)} {interval} samples")
+
     return df
 
 
@@ -121,10 +119,10 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
     # Dodaj małą stałą aby uniknąć dzielenia przez 0
     df_resampled['volume_zscore'] = (df_resampled['Volume'] - volume_mean) / (volume_std + 1e-8)
     df_resampled['volume_zscore'] = df_resampled['volume_zscore'].clip(-5, 5)
-    df_resampled['local_ATH'] = df_resampled['Close'].rolling(window=100, min_periods=1).max()
-    df_resampled['local_ATL'] = df_resampled['Close'].rolling(window=100, min_periods=1).min()
-    df_resampled['pct_change'] = df_resampled['Close'].pct_change(12)
-    df_resampled['isweekend'] = (df_resampled.index.dayofweek >=5).astype(float)
+    df_resampled['local_ATH'] = df_resampled['Close'].rolling(window=50, min_periods=1).max()
+    df_resampled['local_ATL'] = df_resampled['Close'].rolling(window=50, min_periods=1).min()
+    df_resampled['pct_change'] = df_resampled['Close'].pct_change(periods=3,fill_method=None)
+    df_resampled['pct_change'] = df_resampled['pct_change'].fillna(0.0)
     is_ath = df_resampled['Close'] == df_resampled['local_ATH']
     is_atl = df_resampled['Close'] == df_resampled['local_ATL']
     
@@ -141,9 +139,27 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
     df_resampled['time_local_Low'] = cumsum_not_atl - last_atl_cumsum
     
     # Temporal features
-    df_resampled['day_of_week'] = df_resampled.index.dayofweek
-    df_resampled['hour'] = df_resampled.index.hour
-    
+    df_resampled['day_of_week'] = np.sin(2 * np.pi * df_resampled.index.dayofweek / 7)
+    df_resampled['hour'] = np.sin(2 * np.pi * df_resampled.index.hour / 24)
+    df_resampled['log_return_1h'] = np.log(df_resampled['Close'] / df_resampled['Close'].shift(1)).fillna(0)
+
+    # 2. VOLATILITY RATIO (short-term vs long-term volatility)
+    # Short-term volatility (6 periods = ~1.5 days for 6h candles)
+    short_vol = df_resampled['log_return_1h'].rolling(window=6, min_periods=1).std().fillna(0)
+    # Long-term volatility (24 periods = ~6 days for 6h candles)
+    long_vol = df_resampled['log_return_1h'].rolling(window=24, min_periods=1).std().fillna(0)
+    df_resampled['volatility_ratio'] = short_vol / (long_vol + 1e-8)
+
+    # 3. VOLUME-PRICE CORRELATION (smart money detection)
+    # 20-period rolling correlation between volume and price
+
+
+    # 4. TAKER BUY RATIO (buy pressure)
+    df_resampled['taker_buy_ratio'] = (
+            df_resampled['Taker Buy Base Asset Volume'] /
+            (df_resampled['Volume'] + 1e-8)
+    )
+
     # Technical indicators with safe NaN handling
     # EMA
     df_resampled['EMA_12'] = df_resampled['Close'].ewm(span=12, min_periods=1,adjust=False).mean()
@@ -162,13 +178,16 @@ def compute_features(df: pd.DataFrame, resample_hours: int) -> Tuple[pd.DataFram
     rs = rs.fillna(0)
     df_resampled['RSI'] = 100 - (100 / (1 + rs))
     df_resampled['RSI'] = df_resampled['RSI'].fillna(50.0)  # Default to neutral RSI
-    
     # Volatility
     df_resampled['Volatility'] = df_resampled['Close'].rolling(window=12, min_periods=1).std()
     df_resampled['Volatility'] = df_resampled['Volatility'].fillna(0.0)
-    
+    bb_ma = df_resampled['Close'].rolling(20).mean()
+    bb_std = df_resampled['Close'].rolling(20).std()
+    df_resampled['bb_upper'] = bb_ma + (bb_std * 2)
+    df_resampled['bb_lower'] = bb_ma - (bb_std * 2)
+    df_resampled['bb_position'] = (df_resampled['Close'] - df_resampled['bb_lower']) / ( df_resampled['bb_upper'] - df_resampled['bb_lower'] + 1e-8)
     # Drop intermediate columns
-    df_resampled = df_resampled.drop(columns=['local_ATH', 'local_ATL'])
+    df_resampled = df_resampled.drop(columns=['local_ATH', 'local_ATL','Quote Asset Volume','Taker Buy Quote Asset Volume','Taker Buy Base Asset Volume','log_return_1h','bb_position','EMA_26','MACD_signal'])
     
     # Drop any remaining NaN rows
     df_resampled = df_resampled.dropna()
@@ -279,6 +298,7 @@ def make_dataset(
     resample_hours: int,
     horizon: int,
     step: int,
+    cutoff:int,
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Orchestrate dataset creation: download, compute features, build windows, and save.
@@ -286,16 +306,14 @@ def make_dataset(
     Returns:
         Tuple of (X, y, feature_names)
     """
-    df_raw = download_data(symbol, months)
-    print(f"Downloaded {len(df_raw)} hourly samples")
+    df_raw = download_data(symbol, months,cutoff=cutoff)
+
     df_raw = df_raw[df_raw.index >= df_raw.index[0].ceil('D')]
-    print(f"Computing features with {resample_hours}h resampling...")
+
     df_features, feature_names = compute_features(df_raw, resample_hours)
-    print(f"Resampled to {len(df_features)} samples with {len(feature_names)} features")
-    
-    print(f"Building sliding windows (window={window_days} days, horizon={horizon}, step={step})...")
+
     X, y = build_windows(df_features, window_days, resample_hours, horizon, step)
-    print(f"Created {len(X)} windows with shape {X.shape}")
+
     
     # Create output directory
     outdir_path = Path(f"{symbol}_{window_days}_{resample_hours}_{horizon}")
@@ -305,83 +323,19 @@ def make_dataset(
     x_path = outdir_path / "X.npy"
     y_path = outdir_path / "y.npy"
     features_path = outdir_path / "features.json"
-    
-    print(f"Saving dataset to {outdir_path}...")
+
     np.save(x_path, X)
     np.save(y_path, y)
     
     # Save feature names as JSON
     with open(features_path, 'w') as f:
         json.dump(feature_names, f, indent=2)
-    
-    print(f"\nDataset saved successfully!")
-    print(f"  X shape: {X.shape} -> {x_path}")
-    print(f"  y shape: {y.shape} -> {y_path}")
-    print(f"  Features: {len(feature_names)} -> {features_path}")
-    print(f"  Feature names: {feature_names}")
+
     
     return X, y, feature_names
 
 
-def main():
-    """Parse CLI arguments and generate dataset."""
-    parser = argparse.ArgumentParser(
-        description="Generate LSTM-ready dataset from stock/crypto data",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument(
-        "--symbol",
-        type=str,
-        default="BTC-USD",
-        help="Stock/crypto symbol (e.g., BTC-USD, AAPL)"
-    )
-    parser.add_argument(
-        "--months",
-        type=int,
-        default=6,
-        help="Number of past months to fetch (-1 for full history)"
-    )
-    parser.add_argument(
-        "--window-days",
-        type=int,
-        default=14,
-        help="Number of past days in each training window"
-    )
-    parser.add_argument(
-        "--resample-hours",
-        type=int,
-        default=12,
-        help="Resampling interval in hours"
-    )
-    parser.add_argument(
-        "--horizon",
-        type=int,
-        default=1,
-        help="Number of resampled steps ahead to predict"
-    )
-    parser.add_argument(
-        "--step",
-        type=int,
-        default=1,
-        help="Stride between sliding windows"
-    )
 
-    
-    args = parser.parse_args()
-    
-    try:
-        make_dataset(
-            symbol=args.symbol,
-            months=args.months,
-            window_days=args.window_days,
-            resample_hours=args.resample_hours,
-            horizon=args.horizon,
-            step=args.step,
-
-        )
-    except Exception as e:
-        print(f"Error generating dataset: {e}")
-        raise
 
 
 # Keep these functions for backward compatibility with other modules
