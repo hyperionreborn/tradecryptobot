@@ -1,6 +1,6 @@
 # crypto
 
-Drafting a crypto trading bot using the dexscreener API
+A crypto trading bot using binance API
 
 ## Pre requisites
 
