@@ -3,7 +3,7 @@
 
 A machine learning–based crypto trading system built with PyTorch and the Binance API. \
 
-The project: \ 
+The project:  \ 
 
 Downloads historical market data from Binance  \
 
