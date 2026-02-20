@@ -3,17 +3,17 @@
 
 A machine learning–based crypto trading system built with PyTorch and the Binance API. \
 
-The project:  \ 
+The project:  
 
-Downloads historical market data from Binance  \
+Downloads historical market data from Binance  
 
-Builds advanced technical features  \
+Builds advanced technical features  
 
-Trains LSTM-based deep learning models  \
+Trains LSTM-based deep learning models  
 
-Performs backtesting  \ 
+Performs backtesting   
 
-Uses confidence filtering for trading  \
+Uses confidence filtering for trading  
 ## Pre requisites
 
 Python 3.8 or higher
