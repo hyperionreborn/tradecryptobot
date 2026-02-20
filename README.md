@@ -1,4 +1,5 @@
-# crypto
+# tradecryptobot
+
 
 
 A machine learning–based crypto trading system built with PyTorch and the Binance API. \
