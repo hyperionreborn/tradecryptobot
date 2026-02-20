@@ -55,3 +55,6 @@ Python 3.8 or higher
 3. `uv pip sync`
 4. `./.venv/Scripts/activate`
 And then run the code
+# Donation
+If you are feeling generous you can donate to the solana address below , this way i will have more resources to further develop it  
+8jb977X6PpqfKdM7fMGDgGVew7eR3zttEczUVQrvmXAw
