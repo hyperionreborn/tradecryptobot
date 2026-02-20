@@ -1,17 +1,23 @@
 # crypto
 
-A crypto trading bot using binance API
 
+A machine learning–based crypto trading system built with PyTorch and the Binance API. \
+
+The project: \ 
+
+Downloads historical market data from Binance \
+
+Builds advanced technical features \
+
+Trains LSTM-based deep learning models \
+
+Performs backtesting \ 
+
+Uses confidence filtering for trading \
 ## Pre requisites
 
 Python 3.8 or higher
 
-## TODO  
-  \
-1.finetune the NLP  \
-2.~~move all the sentive variables to .env~~ [X] \
-3.add techincal indicators usage  \
-4.implement this project for stablecoins(as a new repo on in this one)  
 
 
 
