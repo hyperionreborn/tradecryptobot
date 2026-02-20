@@ -15,6 +15,25 @@ Trains LSTM-based deep learning models
 Performs backtesting   
 
 Uses confidence filtering for trading  
+
+## Usage:
+
+python main.py --backtest --symbol all  
+
+Performs rolling retraining with cutoff shifts and prints statistics.  
+
+python main.py --grid_search --symbol BTCUSDT  
+
+Performs grid search  
+
+python main.py --train --symbol all  
+
+Train all symbols
+
+python main.py --data_fetch  --symbol BTCUSDT  --months 8 --window_days 28  --resample_hours 4  --horizon 3  
+
+Fetch the data
+
 ## Pre requisites
 
 Python 3.8 or higher
