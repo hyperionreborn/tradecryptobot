@@ -24,7 +24,7 @@ Uses confidence filtering for trading
 python main.py --backtest --symbol all  
 
 
-### Performs grid search 
+### Perform grid search 
 python main.py --grid_search --symbol BTCUSDT  
 
  
