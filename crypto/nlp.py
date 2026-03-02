@@ -4,10 +4,16 @@ import torch
 import torch.nn.functional as F
 
 NLP_MODEL = "cardiffnlp/twitter-roberta-base-sentiment"
-nlp_model = AutoModelForSequenceClassification.from_pretrained(NLP_MODEL)
-tokenizer = AutoTokenizer.from_pretrained(NLP_MODEL)
-nlp_model.eval()
+nlp_model = None
+tokenizer = None
 SENTIMENT_LABELS = ["negative", "neutral", "positive"]
+
+def _load_nlp_model():
+    global nlp_model, tokenizer
+    if nlp_model is None:
+        nlp_model = AutoModelForSequenceClassification.from_pretrained(NLP_MODEL)
+        tokenizer = AutoTokenizer.from_pretrained(NLP_MODEL)
+        nlp_model.eval()
 def generate_keywords(coin_name,ticker = None):
     if ticker is None:
         ticker = coin_name[:4].upper()
@@ -58,7 +64,7 @@ def get_sentiment_for_tweet(tweet,coin,ticker=None):
     return
 
 def get_dominant_sentiment(text):
-
+    _load_nlp_model()
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     with torch.no_grad():
         outputs = nlp_model(**inputs)

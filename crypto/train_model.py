@@ -532,7 +532,7 @@ def TrainAll(dataset_dir,SEED = 42, EPOCHS=100, BATCH=32, LR=1e-3):
         print("No valid training data\n")
         exit(1)
     pos_ratio = (dataset.y_class.sum() / len(dataset)).item()
-    print(f"Label Distribution → Up: {pos_ratio:.2%}, Down: {1 - pos_ratio:.2%} across {len(dataset)} samples ")
+    print(f"Label Distribution - Up: {pos_ratio:.2%}, Down: {1 - pos_ratio:.2%} across {len(dataset)} samples ")
     # Calculate class weights for better balancing
 
     # Split into train/test
