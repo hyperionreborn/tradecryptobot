@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -165,13 +165,84 @@ def make_dataset(
     return X, y, feature_names
 
 
-def get_evaluate_window(symbol: str, window_days: int, years: int = 10) -> np.ndarray:
+def get_evaluate_window(
+    symbol: str,
+    window_days: int,
+    years: int = 10,
+    include_regime_features: bool = True,
+) -> np.ndarray:
     df = download_data(symbol=symbol, years=max(years, 2), cutoff_days=0)
-    feat, _ = compute_features(df)
+    feat, _ = compute_features(df, include_regime_features=include_regime_features)
     window_df = feat.iloc[-window_days:]
     if len(window_df) < window_days:
         raise ValueError(f"Not enough rows for inference window of {window_days} days")
     return window_df.values.astype(np.float32)
+
+
+def _download_data_between(symbol: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    df = yf.download(
+        tickers=symbol,
+        start=start_date.strftime("%Y-%m-%d"),
+        end=end_date.strftime("%Y-%m-%d"),
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+    )
+    if df is None or df.empty:
+        raise RuntimeError(f"No data returned for {symbol} between {start_date.date()} and {end_date.date()}")
+    df = _normalize_ohlcv_columns(df)
+    df.index = pd.to_datetime(df.index)
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
+    return df.dropna().sort_index()
+
+
+def get_evaluate_window_at_date(
+    symbol: str,
+    window_days: int,
+    as_of_date: str,
+    horizon_days: int = 1,
+    years: int = 10,
+    include_regime_features: bool = True,
+) -> Tuple[np.ndarray, pd.Timestamp, Optional[pd.Timestamp], float, Optional[float]]:
+    anchor = pd.Timestamp(as_of_date).normalize()
+    if pd.isna(anchor):
+        raise ValueError(f"Invalid as_of_date: {as_of_date}")
+
+    start_date = anchor - timedelta(days=int(round(max(years, 2) * 365.25)))
+    # Add calendar-day buffer so we can access the future trading day(s) for realized comparison.
+    end_date = anchor + timedelta(days=max(10, int(horizon_days) * 4 + 5))
+    df = _download_data_between(symbol=symbol, start_date=start_date.to_pydatetime(), end_date=end_date.to_pydatetime())
+    feat, _ = compute_features(df, include_regime_features=include_regime_features)
+    if feat.empty:
+        raise ValueError("No feature rows available for replay")
+
+    past_mask = feat.index <= anchor
+    if not past_mask.any():
+        raise ValueError(f"No market data on or before {anchor.date()} for {symbol}")
+
+    as_of_idx = int(np.where(past_mask)[0][-1])
+    if as_of_idx + 1 < window_days:
+        raise ValueError(
+            f"Not enough history before {feat.index[as_of_idx].date()} for window_days={window_days}"
+        )
+
+    start_idx = as_of_idx - window_days + 1
+    window_df = feat.iloc[start_idx : as_of_idx + 1]
+    if len(window_df) != window_days:
+        raise ValueError(f"Window length mismatch: expected {window_days}, got {len(window_df)}")
+
+    as_of_actual = pd.Timestamp(feat.index[as_of_idx]).normalize()
+    as_of_close = float(feat.iloc[as_of_idx]["Close"])
+
+    target_idx = as_of_idx + int(horizon_days)
+    target_date = None
+    target_close = None
+    if 0 <= target_idx < len(feat):
+        target_date = pd.Timestamp(feat.index[target_idx]).normalize()
+        target_close = float(feat.iloc[target_idx]["Close"])
+
+    return window_df.values.astype(np.float32), as_of_actual, target_date, as_of_close, target_close
 
 
 def scale_live_window(X: np.ndarray, scaler) -> torch.Tensor:

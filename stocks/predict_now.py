@@ -6,7 +6,12 @@ from pathlib import Path
 import joblib
 import torch
 
-from .data_fetch import dataset_dir_name, get_evaluate_window, scale_live_window
+from .data_fetch import (
+    dataset_dir_name,
+    get_evaluate_window,
+    get_evaluate_window_at_date,
+    scale_live_window,
+)
 from .model import ImprovedLSTMModel
 
 
@@ -18,7 +23,21 @@ def _magnitude_label(change_pct_abs: float) -> str:
     return "high"
 
 
-def predict_now(symbol: str, window_days: int, horizon_days: int):
+def _load_dataset_config(dataset_dir: Path) -> dict:
+    cfg_path = dataset_dir / "dataset_config.json"
+    if cfg_path.exists():
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"use_regime_features": True}
+
+
+def predict_now(
+    symbol: str,
+    window_days: int,
+    horizon_days: int,
+    predict_at_date: str | None = None,
+    compare_realized: bool = False,
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset_dir = Path(dataset_dir_name(symbol, window_days, horizon_days))
     model_path = dataset_dir / "42_stock_model.pt"
@@ -46,6 +65,8 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
             "label_floor_pct": 0.40,
             "label_cap_pct": 1.20,
         }
+    dataset_config = _load_dataset_config(dataset_dir)
+    include_regime_features = bool(dataset_config.get("use_regime_features", True))
 
     model = ImprovedLSTMModel(
         input_size=config["input_size"],
@@ -57,7 +78,24 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
     model.eval()
 
     scaler = joblib.load(scaler_path)
-    X_raw = get_evaluate_window(symbol=symbol, window_days=window_days)
+    replay_target_date = None
+    replay_as_of_date = None
+    as_of_close = None
+    realized_close = None
+    if predict_at_date:
+        X_raw, replay_as_of_date, replay_target_date, as_of_close, realized_close = get_evaluate_window_at_date(
+            symbol=symbol,
+            window_days=window_days,
+            as_of_date=predict_at_date,
+            horizon_days=horizon_days,
+            include_regime_features=include_regime_features,
+        )
+    else:
+        X_raw = get_evaluate_window(
+            symbol=symbol,
+            window_days=window_days,
+            include_regime_features=include_regime_features,
+        )
     X = scale_live_window(X_raw, scaler).to(device)
 
     with torch.no_grad():
@@ -104,11 +142,21 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
     print("=" * 60)
     print(f" Symbol             : {symbol}")
     print(f" Horizon            : {horizon_days} trading day(s)")
+    if replay_as_of_date is not None:
+        print(f" Replay as-of date  : {replay_as_of_date.date()}")
+    if replay_target_date is not None:
+        print(f" Target date        : {replay_target_date.date()}")
     print(f" Prob UP            : {prob_up:.1%}")
     print(f" Prob DOWN          : {1 - prob_up:.1%}")
     if dynamic_up_threshold_pct is not None:
         print(f" UP threshold today : +{dynamic_up_threshold_pct:.2f}% (vol-scaled)")
     print(f" Predicted move     : {change_pct:+.2f}% ({direction})")
+    if compare_realized and (as_of_close is not None) and (realized_close is not None):
+        realized_change_pct = ((realized_close / as_of_close) - 1.0) * 100.0
+        realized_dir = "UP" if realized_change_pct >= 0 else "DOWN"
+        print(f" Realized move      : {realized_change_pct:+.2f}% ({realized_dir})")
+    elif compare_realized and predict_at_date:
+        print(" Realized move      : N/A (future trading data unavailable for selected date)")
     print(f" Move strength      : {magnitude}")
     print(f" Signal             : {signal}")
     print("=" * 60)
@@ -119,5 +167,13 @@ if __name__ == "__main__":
     parser.add_argument("--symbol", type=str, default="AAPL")
     parser.add_argument("--window_days", type=int, default=60)
     parser.add_argument("--horizon_days", type=int, default=5)
+    parser.add_argument("--predict_at_date", type=str, default=None, help="Replay date YYYY-MM-DD")
+    parser.add_argument("--compare_realized", action="store_true", help="Show realized move for replay mode")
     args = parser.parse_args()
-    predict_now(args.symbol, args.window_days, args.horizon_days)
+    predict_now(
+        args.symbol,
+        args.window_days,
+        args.horizon_days,
+        predict_at_date=args.predict_at_date,
+        compare_realized=args.compare_realized,
+    )

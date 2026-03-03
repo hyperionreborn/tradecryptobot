@@ -51,6 +51,17 @@ if __name__ == "__main__":
         default=1.20,
         help="Maximum threshold in percent for vol_scaled label mode",
     )
+    parser.add_argument(
+        "--predict_at_date",
+        type=str,
+        default=None,
+        help="Replay prediction as-of this date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--compare_realized",
+        action="store_true",
+        help="With --predict_at_date, print realized next-horizon move when available",
+    )
     args = parser.parse_args()
 
     symbols = default_symbols if args.symbol == "all" else [args.symbol]
@@ -91,6 +102,18 @@ if __name__ == "__main__":
     if args.predict_now:
         if args.symbol == "all":
             for s in symbols:
-                predict_now(s, args.window_days, args.horizon_days)
+                predict_now(
+                    s,
+                    args.window_days,
+                    args.horizon_days,
+                    predict_at_date=args.predict_at_date,
+                    compare_realized=args.compare_realized,
+                )
         else:
-            predict_now(args.symbol, args.window_days, args.horizon_days)
+            predict_now(
+                args.symbol,
+                args.window_days,
+                args.horizon_days,
+                predict_at_date=args.predict_at_date,
+                compare_realized=args.compare_realized,
+            )
