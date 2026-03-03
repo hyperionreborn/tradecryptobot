@@ -42,7 +42,7 @@ def download_data(symbol: str, years: int, cutoff_days: int = 0) -> pd.DataFrame
     return df.dropna().sort_index()
 
 
-def compute_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+def compute_features(df: pd.DataFrame, include_regime_features: bool = True) -> Tuple[pd.DataFrame, List[str]]:
     feat = df.copy()
     eps = 1e-8
 
@@ -83,6 +83,16 @@ def compute_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     feat["bb_upper"] = bb_mid + 2 * bb_std
     feat["bb_lower"] = bb_mid - 2 * bb_std
     feat["bb_width"] = (feat["bb_upper"] - feat["bb_lower"]) / (feat["Close"] + eps)
+
+    if include_regime_features:
+        trend_spread = (feat["EMA_12"] - feat["EMA_26"]) / (feat["Close"] + eps)
+        feat["trend_strength"] = trend_spread.abs()
+        feat["realized_vol_20d"] = feat["volatility_20d"] * np.sqrt(252.0)
+        feat["trend_state"] = np.where(
+            trend_spread > 0.0015,
+            1.0,
+            np.where(trend_spread < -0.0015, -1.0, 0.0),
+        )
 
     feat = feat.drop(columns=["log_return", "EMA_26", "MACD_signal", "bb_upper", "bb_lower"])
     feat = feat.replace([np.inf, -np.inf], np.nan).dropna()
@@ -136,9 +146,10 @@ def make_dataset(
     horizon_days: int,
     step: int,
     cutoff_days: int = 0,
+    use_regime_features: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     df_raw = download_data(symbol=symbol, years=years, cutoff_days=cutoff_days)
-    df_features, feature_names = compute_features(df_raw)
+    df_features, feature_names = compute_features(df_raw, include_regime_features=use_regime_features)
     X, y = build_windows(df_features, window_days, horizon_days, step)
 
     outdir_path = Path(dataset_dir_name(symbol, window_days, horizon_days))
@@ -148,6 +159,8 @@ def make_dataset(
     np.save(outdir_path / "y.npy", y)
     with open(outdir_path / "features.json", "w", encoding="utf-8") as f:
         json.dump(feature_names, f, indent=2)
+    with open(outdir_path / "dataset_config.json", "w", encoding="utf-8") as f:
+        json.dump({"use_regime_features": bool(use_regime_features)}, f, indent=2)
 
     return X, y, feature_names
 

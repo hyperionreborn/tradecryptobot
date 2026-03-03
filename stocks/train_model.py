@@ -23,7 +23,16 @@ def _set_seed(seed: int) -> None:
 
 
 class NumpyDataset(Dataset):
-    def __init__(self, X_path: Path, y_path: Path, features_path: Path):
+    def __init__(
+        self,
+        X_path: Path,
+        y_path: Path,
+        features_path: Path,
+        label_mode: str = "vol_scaled",
+        label_atr_mult: float = 0.35,
+        label_floor_pct: float = 0.40,
+        label_cap_pct: float = 1.20,
+    ):
         self.X = torch.FloatTensor(np.load(X_path))
         self.y_prices = torch.FloatTensor(np.load(y_path))
 
@@ -34,7 +43,25 @@ class NumpyDataset(Dataset):
         current_prices = self.X[:, -1, self.close_idx]
         safe_current = torch.where(current_prices == 0, torch.ones_like(current_prices), current_prices)
 
-        self.y_class = (self.y_prices > current_prices).float()
+        if label_mode == "vol_scaled":
+            if "ATR_14" in self.feature_names:
+                atr_idx = self.feature_names.index("ATR_14")
+                atr_now = self.X[:, -1, atr_idx].abs()
+                atr_pct = atr_now / safe_current
+            else:
+                # Fallback if ATR_14 is missing: use absolute 1d return as a rough volatility proxy.
+                if "return_1d" in self.feature_names:
+                    ret_idx = self.feature_names.index("return_1d")
+                    atr_pct = self.X[:, -1, ret_idx].abs()
+                else:
+                    atr_pct = torch.full_like(safe_current, 0.01)
+            floor_dec = float(label_floor_pct) / 100.0
+            cap_dec = float(label_cap_pct) / 100.0
+            threshold = torch.clamp(label_atr_mult * atr_pct, min=floor_dec, max=cap_dec)
+            future_return = (self.y_prices / safe_current) - 1.0
+            self.y_class = (future_return > threshold).float()
+        else:
+            self.y_class = (self.y_prices > current_prices).float()
         self.y_change = (self.y_prices / safe_current) - 1.0
 
     def __len__(self):
@@ -86,7 +113,17 @@ def _eval_epoch(model, loader, class_loss_fn, price_loss_fn, device):
     return total_loss / n, correct / n, mse / n
 
 
-def TrainAll(dataset_dir: str, SEED: int = 42, EPOCHS: int = 80, BATCH: int = 32, LR: float = 1e-3) -> Tuple[float, float]:
+def TrainAll(
+    dataset_dir: str,
+    SEED: int = 42,
+    EPOCHS: int = 80,
+    BATCH: int = 32,
+    LR: float = 1e-3,
+    label_mode: str = "vol_scaled",
+    label_atr_mult: float = 0.35,
+    label_floor_pct: float = 0.40,
+    label_cap_pct: float = 1.20,
+) -> Tuple[float, float]:
     _set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training stock model on {dataset_dir} ({device})")
@@ -98,7 +135,15 @@ def TrainAll(dataset_dir: str, SEED: int = 42, EPOCHS: int = 80, BATCH: int = 32
     if not x_path.exists() or not y_path.exists() or not features_path.exists():
         raise FileNotFoundError(f"Dataset files missing in {dataset_dir}")
 
-    dataset = NumpyDataset(x_path, y_path, features_path)
+    dataset = NumpyDataset(
+        x_path,
+        y_path,
+        features_path,
+        label_mode=label_mode,
+        label_atr_mult=label_atr_mult,
+        label_floor_pct=label_floor_pct,
+        label_cap_pct=label_cap_pct,
+    )
     n = len(dataset)
     if n < 200:
         print(f"Warning: dataset only has {n} windows. Results may be unstable.")
@@ -172,6 +217,15 @@ def TrainAll(dataset_dir: str, SEED: int = 42, EPOCHS: int = 80, BATCH: int = 32
     }
     with open(outdir / "model_config.json", "w", encoding="utf-8") as f:
         json.dump(model_config, f, indent=2)
+
+    label_config = {
+        "label_mode": label_mode,
+        "label_atr_mult": float(label_atr_mult),
+        "label_floor_pct": float(label_floor_pct),
+        "label_cap_pct": float(label_cap_pct),
+    }
+    with open(outdir / "label_config.json", "w", encoding="utf-8") as f:
+        json.dump(label_config, f, indent=2)
 
     best_val_acc = 0.0
     best_val_mse = float("inf")

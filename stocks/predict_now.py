@@ -24,6 +24,7 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
     model_path = dataset_dir / "42_stock_model.pt"
     scaler_path = dataset_dir / "scaler.pkl"
     config_path = dataset_dir / "model_config.json"
+    label_config_path = dataset_dir / "label_config.json"
 
     if not model_path.exists():
         print(f"[ERROR] Missing model at {model_path}")
@@ -35,6 +36,16 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
+    if label_config_path.exists():
+        with open(label_config_path, "r", encoding="utf-8") as f:
+            label_config = json.load(f)
+    else:
+        label_config = {
+            "label_mode": "price_direction",
+            "label_atr_mult": 0.35,
+            "label_floor_pct": 0.40,
+            "label_cap_pct": 1.20,
+        }
 
     model = ImprovedLSTMModel(
         input_size=config["input_size"],
@@ -58,6 +69,24 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
     magnitude = _magnitude_label(abs(change_pct))
     direction = "UP" if change_pct >= 0 else "DOWN"
 
+    dynamic_up_threshold_pct = None
+    if label_config.get("label_mode") == "vol_scaled":
+        try:
+            features_path = dataset_dir / "features.json"
+            with open(features_path, "r", encoding="utf-8") as f:
+                feature_names = json.load(f)
+            atr_idx = feature_names.index("ATR_14")
+            close_idx = feature_names.index("Close")
+            atr_now = float(abs(X_raw[-1, atr_idx]))
+            close_now = float(X_raw[-1, close_idx]) if float(X_raw[-1, close_idx]) != 0.0 else 1.0
+            atr_pct = atr_now / close_now
+            raw_t = float(label_config.get("label_atr_mult", 0.35)) * atr_pct * 100.0
+            floor_t = float(label_config.get("label_floor_pct", 0.40))
+            cap_t = float(label_config.get("label_cap_pct", 1.20))
+            dynamic_up_threshold_pct = max(floor_t, min(cap_t, raw_t))
+        except Exception:
+            dynamic_up_threshold_pct = None
+
     if prob_up >= 0.60:
         signal = "LONG (strong confidence)"
     elif prob_up >= 0.52:
@@ -77,6 +106,8 @@ def predict_now(symbol: str, window_days: int, horizon_days: int):
     print(f" Horizon            : {horizon_days} trading day(s)")
     print(f" Prob UP            : {prob_up:.1%}")
     print(f" Prob DOWN          : {1 - prob_up:.1%}")
+    if dynamic_up_threshold_pct is not None:
+        print(f" UP threshold today : +{dynamic_up_threshold_pct:.2f}% (vol-scaled)")
     print(f" Predicted move     : {change_pct:+.2f}% ({direction})")
     print(f" Move strength      : {magnitude}")
     print(f" Signal             : {signal}")

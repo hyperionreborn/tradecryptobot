@@ -21,6 +21,36 @@ if __name__ == "__main__":
     parser.add_argument("--step", type=int, default=1, help="Stride between windows")
     parser.add_argument("--epochs", type=int, default=80, help="Training epochs")
     parser.add_argument("--cutoff_days", type=int, default=0, help="Shift end-date backwards by N days")
+    parser.add_argument(
+        "--no_regime_features",
+        action="store_true",
+        help="Disable regime feature engineering when building dataset",
+    )
+    parser.add_argument(
+        "--label_mode",
+        type=str,
+        default="vol_scaled",
+        choices=["price_direction", "vol_scaled"],
+        help="Classification label mode for training",
+    )
+    parser.add_argument(
+        "--label_atr_mult",
+        type=float,
+        default=0.35,
+        help="ATR%% multiplier for vol_scaled label mode",
+    )
+    parser.add_argument(
+        "--label_floor_pct",
+        type=float,
+        default=0.40,
+        help="Minimum threshold in percent for vol_scaled label mode",
+    )
+    parser.add_argument(
+        "--label_cap_pct",
+        type=float,
+        default=1.20,
+        help="Maximum threshold in percent for vol_scaled label mode",
+    )
     args = parser.parse_args()
 
     symbols = default_symbols if args.symbol == "all" else [args.symbol]
@@ -35,6 +65,7 @@ if __name__ == "__main__":
                 horizon_days=args.horizon_days,
                 step=args.step,
                 cutoff_days=args.cutoff_days,
+                use_regime_features=(not args.no_regime_features),
             )
             time.sleep(0.5)
 
@@ -42,7 +73,14 @@ if __name__ == "__main__":
         summary = {}
         for s in symbols:
             ds_dir = dataset_dir_name(s, args.window_days, args.horizon_days)
-            acc, rmse = TrainAll(dataset_dir=ds_dir, EPOCHS=args.epochs)
+            acc, rmse = TrainAll(
+                dataset_dir=ds_dir,
+                EPOCHS=args.epochs,
+                label_mode=args.label_mode,
+                label_atr_mult=args.label_atr_mult,
+                label_floor_pct=args.label_floor_pct,
+                label_cap_pct=args.label_cap_pct,
+            )
             summary[s] = {"accuracy": acc, "rmse_change": rmse}
 
         if args.symbol == "all":
