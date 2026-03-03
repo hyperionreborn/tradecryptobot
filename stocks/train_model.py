@@ -104,34 +104,54 @@ def TrainAll(dataset_dir: str, SEED: int = 42, EPOCHS: int = 80, BATCH: int = 32
         print(f"Warning: dataset only has {n} windows. Results may be unstable.")
 
     train_end = int(0.7 * n)
-    test_end = int(0.85 * n)
+    val_end = int(0.85 * n)
+    # Purge a gap between splits so highly-overlapping neighboring windows
+    # do not leak short-term context across train/val/test boundaries.
+    gap = max(1, int(0.5 * dataset.X.shape[1]))
+    val_start = min(train_end + gap, n)
+    test_start = min(val_end + gap, n)
+
     train_ds = torch.utils.data.Subset(dataset, range(0, train_end))
-    test_ds = torch.utils.data.Subset(dataset, range(train_end, test_end))
-    val_ds = torch.utils.data.Subset(dataset, range(test_end, n))
+    val_ds = torch.utils.data.Subset(dataset, range(val_start, val_end))
+    test_ds = torch.utils.data.Subset(dataset, range(test_start, n))
+
+    if len(val_ds) < 32 or len(test_ds) < 32:
+        # Fallback to contiguous chronological splits if purge removed too much data.
+        train_ds = torch.utils.data.Subset(dataset, range(0, train_end))
+        val_ds = torch.utils.data.Subset(dataset, range(train_end, val_end))
+        test_ds = torch.utils.data.Subset(dataset, range(val_end, n))
+
+    if len(train_ds) == 0 or len(val_ds) == 0 or len(test_ds) == 0:
+        raise ValueError(
+            f"Split too small for training (train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}). "
+            "Increase years or reduce window_days."
+        )
 
     X_train = torch.stack([train_ds[i][0] for i in range(len(train_ds))])
-    X_test = torch.stack([test_ds[i][0] for i in range(len(test_ds))])
     X_val = torch.stack([val_ds[i][0] for i in range(len(val_ds))])
+    X_test = torch.stack([test_ds[i][0] for i in range(len(test_ds))])
 
     ntr, t_steps, n_features = X_train.shape
     nte = X_test.shape[0]
     nval = X_val.shape[0]
 
+    print(f"Samples: train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
+
     scaler = StandardScaler()
     Xtr_2d = scaler.fit_transform(X_train.view(-1, n_features).numpy())
-    Xte_2d = scaler.transform(X_test.view(-1, n_features).numpy())
     Xval_2d = scaler.transform(X_val.view(-1, n_features).numpy())
+    Xte_2d = scaler.transform(X_test.view(-1, n_features).numpy())
     joblib.dump(scaler, outdir / "scaler.pkl")
 
     train_ds.dataset.X[train_ds.indices] = torch.from_numpy(Xtr_2d).float().view(ntr, t_steps, n_features)
-    test_ds.dataset.X[test_ds.indices] = torch.from_numpy(Xte_2d).float().view(nte, t_steps, n_features)
     val_ds.dataset.X[val_ds.indices] = torch.from_numpy(Xval_2d).float().view(nval, t_steps, n_features)
+    test_ds.dataset.X[test_ds.indices] = torch.from_numpy(Xte_2d).float().view(nte, t_steps, n_features)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH)
     val_loader = DataLoader(val_ds, batch_size=BATCH)
 
-    up_ratio = (torch.stack([test_ds[i][1] for i in range(len(test_ds))]).mean().item()) if len(test_ds) else 0.5
+    up_ratio = (torch.stack([train_ds[i][1] for i in range(len(train_ds))]).mean().item()) if len(train_ds) else 0.5
     class_loss_fn = FocalLoss(alpha=max(0.1, 1.0 - up_ratio), gamma=1.0)
     price_loss_fn = nn.MSELoss()
 
@@ -142,7 +162,7 @@ def TrainAll(dataset_dir: str, SEED: int = 42, EPOCHS: int = 80, BATCH: int = 32
         dropout=0.3,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=40, gamma=0.9)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=8)
 
     model_config = {
         "input_size": n_features,
@@ -153,21 +173,20 @@ def TrainAll(dataset_dir: str, SEED: int = 42, EPOCHS: int = 80, BATCH: int = 32
     with open(outdir / "model_config.json", "w", encoding="utf-8") as f:
         json.dump(model_config, f, indent=2)
 
-    best_acc = 0.0
-    best_val_mse = 999.0
+    best_val_acc = 0.0
+    best_val_mse = float("inf")
     best_path = outdir / f"{SEED}_stock_model.pt"
     patience = 30
     no_improve = 0
 
     for _epoch in range(1, EPOCHS + 1):
         _ = _train_epoch(model, train_loader, class_loss_fn, price_loss_fn, optimizer, device, alpha=1.6, beta=0.8)
-        _test_loss, test_acc, test_mse = _eval_epoch(model, test_loader, class_loss_fn, price_loss_fn, device)
         _val_loss, val_acc, val_mse = _eval_epoch(model, val_loader, class_loss_fn, price_loss_fn, device)
-        scheduler.step()
+        scheduler.step(val_mse)
 
-        improved = (test_acc > best_acc) or (val_mse < best_val_mse)
+        improved = (val_acc > best_val_acc) or (val_mse < best_val_mse)
         if improved:
-            best_acc = max(best_acc, test_acc)
+            best_val_acc = max(best_val_acc, val_acc)
             best_val_mse = min(best_val_mse, val_mse)
             torch.save(model.state_dict(), best_path)
             no_improve = 0
